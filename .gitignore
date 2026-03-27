@@ -1,0 +1,13 @@
+build/
+.cache/
+.harness/
+.DS_Store
+*.o
+*.a
+*.dylib
+compile_commands.json
+mario.html
+mbti/
+tests/test_openai_live.cpp
+snake-game/
+snake.html
