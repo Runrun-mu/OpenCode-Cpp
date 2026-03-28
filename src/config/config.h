@@ -12,6 +12,8 @@ struct Config {
     std::string openai_base_url = "https://api.openai.com";
     std::string theme = "dark";
     int max_tokens = 4096;
+    int context_window = 128000;
+    int compact_threshold = 102400;
     std::string custom_instructions;
     std::string session_id;
 

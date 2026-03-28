@@ -36,6 +36,8 @@ void Config::load() {
             if (j.contains("default_provider")) default_provider = j["default_provider"].get<std::string>();
             if (j.contains("theme")) theme = j["theme"].get<std::string>();
             if (j.contains("max_tokens")) max_tokens = j["max_tokens"].get<int>();
+            if (j.contains("context_window")) context_window = j["context_window"].get<int>();
+            if (j.contains("compact_threshold")) compact_threshold = j["compact_threshold"].get<int>();
             if (j.contains("custom_instructions")) custom_instructions = j["custom_instructions"].get<std::string>();
             if (j.contains("api_keys")) {
                 auto& keys = j["api_keys"];
@@ -94,6 +96,8 @@ void Config::save() const {
     j["default_provider"] = default_provider;
     j["theme"] = theme;
     j["max_tokens"] = max_tokens;
+    j["context_window"] = context_window;
+    j["compact_threshold"] = compact_threshold;
     j["custom_instructions"] = custom_instructions;
     j["api_keys"] = {
         {"anthropic", anthropic_api_key},

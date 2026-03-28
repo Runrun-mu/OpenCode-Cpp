@@ -121,3 +121,23 @@ add_test(NAME test_skills COMMAND test_skills)
 add_executable(test_compact_status tests/test_compact_status.cpp)
 target_link_libraries(test_compact_status PRIVATE opencodecpp_lib)
 add_test(NAME test_compact_status COMMAND test_compact_status)
+
+add_executable(test_sprint_f1_config tests/test_sprint_f1_config.cpp)
+target_link_libraries(test_sprint_f1_config PRIVATE opencodecpp_lib)
+add_test(NAME test_sprint_f1_config COMMAND test_sprint_f1_config)
+
+add_executable(test_sprint_f2_session tests/test_sprint_f2_session.cpp)
+target_link_libraries(test_sprint_f2_session PRIVATE opencodecpp_lib)
+add_test(NAME test_sprint_f2_session COMMAND test_sprint_f2_session)
+
+add_executable(test_sprint_f3_compaction tests/test_sprint_f3_compaction.cpp)
+target_link_libraries(test_sprint_f3_compaction PRIVATE opencodecpp_lib)
+add_test(NAME test_sprint_f3_compaction COMMAND test_sprint_f3_compaction)
+
+add_executable(test_sprint_f4_suggestions tests/test_sprint_f4_suggestions.cpp)
+target_link_libraries(test_sprint_f4_suggestions PRIVATE opencodecpp_lib)
+add_test(NAME test_sprint_f4_suggestions COMMAND test_sprint_f4_suggestions)
+
+add_executable(test_sprint_f5_parallel tests/test_sprint_f5_parallel.cpp)
+target_link_libraries(test_sprint_f5_parallel PRIVATE opencodecpp_lib)
+add_test(NAME test_sprint_f5_parallel COMMAND test_sprint_f5_parallel)

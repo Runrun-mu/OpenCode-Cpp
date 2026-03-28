@@ -65,4 +65,38 @@ void SessionManager::clearAndReplace(const Message& summary) {
     history_.push_back(summary);
 }
 
+static size_t getMessageCharCount(const Message& msg) {
+    if (msg.content.is_string()) {
+        return msg.content.get<std::string>().size();
+    } else {
+        return msg.content.dump().size();
+    }
+}
+
+double SessionManager::estimateTokens() const {
+    size_t totalChars = 0;
+    for (const auto& msg : history_) {
+        totalChars += getMessageCharCount(msg);
+    }
+    return (static_cast<double>(totalChars) / 4.0) * 1.2;
+}
+
+std::vector<Message> SessionManager::getRecentMessages(int tokenLimit) const {
+    std::vector<Message> result;
+    double accumulatedTokens = 0.0;
+
+    // Iterate from newest to oldest
+    for (int i = static_cast<int>(history_.size()) - 1; i >= 0; i--) {
+        size_t chars = getMessageCharCount(history_[i]);
+        double msgTokens = (static_cast<double>(chars) / 4.0) * 1.2;
+        if (accumulatedTokens + msgTokens > tokenLimit && !result.empty()) {
+            break;
+        }
+        result.insert(result.begin(), history_[i]);
+        accumulatedTokens += msgTokens;
+    }
+
+    return result;
+}
+
 } // namespace opencodecpp

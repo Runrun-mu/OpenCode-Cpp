@@ -17,6 +17,7 @@
 #include <climits>
 #include <atomic>
 #include <unistd.h>
+#include <algorithm>
 
 using namespace ftxui;
 
@@ -119,7 +120,7 @@ void TUI::handleInput(const std::string& input) {
 }
 
 bool TUI::handleSlashCommand(const std::string& input, std::mutex& chatMutex) {
-    // Handle /status command
+    // Handle /status command (AC-3: includes context_window and compact_threshold)
     if (input.substr(0, 7) == "/status") {
         ChatMessage sysMsg;
         sysMsg.role = "tool";
@@ -130,7 +131,9 @@ bool TUI::handleSlashCommand(const std::string& input, std::mutex& chatMutex) {
             + "Messages: " + std::to_string(session_.getHistory().size()) + "\n"
             + "Tokens (in/out): " + std::to_string(totalInputTokens_) + "/" + std::to_string(totalOutputTokens_) + "\n"
             + "Cost: $" + std::to_string(calculateCost()) + "\n"
-            + "Compact threshold: 50 messages";
+            + "Context window: " + std::to_string(config_.context_window) + "\n"
+            + "Compact threshold: " + std::to_string(config_.compact_threshold) + "\n"
+            + "Estimated tokens: " + std::to_string(static_cast<int>(session_.estimateTokens()));
         chatMessages_.push_back(sysMsg);
         return true;
     }
@@ -144,6 +147,27 @@ bool TUI::handleSlashCommand(const std::string& input, std::mutex& chatMutex) {
         startMsg.content = "Compacting conversation...";
         chatMessages_.push_back(startMsg);
         return true; // Will be handled asynchronously
+    }
+
+    // Handle /clear command
+    if (input.substr(0, 6) == "/clear") {
+        chatMessages_.clear();
+        return true;
+    }
+
+    // Handle /help command
+    if (input.substr(0, 5) == "/help") {
+        ChatMessage sysMsg;
+        sysMsg.role = "tool";
+        sysMsg.toolName = "help";
+        sysMsg.toolStatus = "done";
+        std::string content = "Available commands:\n";
+        for (auto& cmd : slashCommands_) {
+            content += "  " + cmd.command + " - " + cmd.description + "\n";
+        }
+        sysMsg.content = content;
+        chatMessages_.push_back(sysMsg);
+        return true;
     }
 
     // Handle /skill command
@@ -227,6 +251,37 @@ void TUI::run() {
             inputComponent->Render() | flex,
         }) | border;
 
+        // F-4: Slash command suggestion overlay (AC-12, AC-13)
+        Elements suggestionElements;
+        if (showSuggestions_ && !inputText.empty() && inputText[0] == '/') {
+            // Filter commands based on input
+            std::vector<SlashCommand> filtered;
+            for (auto& cmd : slashCommands_) {
+                if (cmd.command.find(inputText) == 0 || inputText == "/") {
+                    filtered.push_back(cmd);
+                }
+            }
+
+            if (!filtered.empty()) {
+                // Clamp suggestionIndex_
+                if (suggestionIndex_ >= static_cast<int>(filtered.size())) {
+                    suggestionIndex_ = static_cast<int>(filtered.size()) - 1;
+                }
+                if (suggestionIndex_ < 0) suggestionIndex_ = 0;
+
+                for (int i = 0; i < static_cast<int>(filtered.size()); i++) {
+                    auto item = hbox({
+                        text(filtered[i].command) | bold,
+                        text("  " + filtered[i].description) | dim,
+                    });
+                    if (i == suggestionIndex_) {
+                        item = item | inverted;
+                    }
+                    suggestionElements.push_back(item);
+                }
+            }
+        }
+
         // Status bar
         auto statusBar = renderStatusBar(
             config_.getModel(),
@@ -235,12 +290,16 @@ void TUI::run() {
             calculateCost()
         );
 
-        return vbox({
-            chatBox | flex,
-            separator(),
-            inputArea,
-            statusBar,
-        });
+        Elements layout;
+        layout.push_back(chatBox | flex);
+        layout.push_back(separator());
+        if (!suggestionElements.empty()) {
+            layout.push_back(vbox(suggestionElements) | border | color(Color::Yellow));
+        }
+        layout.push_back(inputArea);
+        layout.push_back(statusBar);
+
+        return vbox(layout);
     });
 
     // Event handler
@@ -262,16 +321,69 @@ void TUI::run() {
             return true;
         }
 
+        // F-4: Update suggestion state when input changes
+        {
+            std::lock_guard<std::mutex> lock(chatMutex);
+            if (!inputText.empty() && inputText[0] == '/') {
+                showSuggestions_ = true;
+            } else {
+                showSuggestions_ = false;
+                suggestionIndex_ = 0;
+            }
+        }
+
+        // F-4: Tab key - auto-complete selected suggestion (AC-15)
+        if (event == Event::Tab && showSuggestions_) {
+            std::lock_guard<std::mutex> lock(chatMutex);
+            // Filter commands
+            std::vector<SlashCommand> filtered;
+            for (auto& cmd : slashCommands_) {
+                if (cmd.command.find(inputText) == 0 || inputText == "/") {
+                    filtered.push_back(cmd);
+                }
+            }
+            if (!filtered.empty() && suggestionIndex_ < static_cast<int>(filtered.size())) {
+                inputText = filtered[suggestionIndex_].command;
+                showSuggestions_ = false;
+                suggestionIndex_ = 0;
+            }
+            return true;
+        }
+
         // Enter key - submit input
         if (event == Event::Return) {
+            // F-4: If suggestions are visible, auto-complete instead of submitting (AC-15)
+            if (showSuggestions_ && !inputText.empty() && inputText[0] == '/') {
+                std::lock_guard<std::mutex> lock(chatMutex);
+                std::vector<SlashCommand> filtered;
+                for (auto& cmd : slashCommands_) {
+                    if (cmd.command.find(inputText) == 0 || inputText == "/") {
+                        filtered.push_back(cmd);
+                    }
+                }
+                // If input is an exact command match, submit it; otherwise autocomplete
+                bool exactMatch = false;
+                for (auto& cmd : slashCommands_) {
+                    if (cmd.command == inputText) { exactMatch = true; break; }
+                }
+                if (!exactMatch && !filtered.empty() && suggestionIndex_ < static_cast<int>(filtered.size())) {
+                    inputText = filtered[suggestionIndex_].command;
+                    showSuggestions_ = false;
+                    suggestionIndex_ = 0;
+                    return true;
+                }
+            }
+
             if (!inputText.empty() && !isGenerating_) {
                 std::string msg = inputText;
                 inputText.clear();
+                showSuggestions_ = false;
+                suggestionIndex_ = 0;
 
                 {
                     std::lock_guard<std::mutex> lock(chatMutex);
 
-                    // Check for slash commands (/skill, /status, /compact)
+                    // Check for slash commands (/skill, /status, /compact, /clear, /help)
                     if (msg[0] == '/' && handleSlashCommand(msg, chatMutex)) {
                         // /compact needs async handling
                         if (msg.substr(0, 8) == "/compact") {
@@ -288,7 +400,7 @@ void TUI::run() {
                         std::thread([this, &chatMutex, &screen, &scrollToBottom]() {
                             std::string systemPrompt =
                                 "You are an AI coding assistant.";
-                            auto summary = agentLoop_->compact(systemPrompt);
+                            auto result = agentLoop_->compact(systemPrompt);
                             {
                                 std::lock_guard<std::mutex> lock(chatMutex);
                                 totalInputTokens_ = agentLoop_->totalInputTokens();
@@ -298,10 +410,10 @@ void TUI::run() {
                                 doneMsg.role = "tool";
                                 doneMsg.toolName = "compact";
                                 doneMsg.toolStatus = "done";
-                                if (summary.empty() || summary.substr(0, 5) == "Error") {
-                                    doneMsg.content = "Compact failed: " + summary;
+                                if (!result.success) {
+                                    doneMsg.content = "Compact failed: " + result.error;
                                 } else {
-                                    doneMsg.content = "Conversation compacted successfully. Summary:\n" + summary;
+                                    doneMsg.content = result.statusMessage + "\n\nSummary:\n" + result.summary;
                                 }
                                 chatMessages_.push_back(doneMsg);
                             }
@@ -372,15 +484,16 @@ void TUI::run() {
                             chatMessages_.push_back(errMsg);
                         }
 
-                        // Auto-compact when message count exceeds 50
-                        if (session_.getHistory().size() > 50) {
-                            auto summary = agentLoop_->compact(systemPrompt);
-                            if (!summary.empty() && summary.substr(0, 5) != "Error") {
+                        // AC-11: Auto-compaction when estimateTokens() > compact_threshold OR messages > 50
+                        if (session_.estimateTokens() > config_.compact_threshold ||
+                            session_.getHistory().size() > 50) {
+                            auto result = agentLoop_->compact(systemPrompt);
+                            if (result.success) {
                                 ChatMessage compactMsg;
                                 compactMsg.role = "tool";
                                 compactMsg.toolName = "compact";
                                 compactMsg.toolStatus = "done";
-                                compactMsg.content = "Auto-compact triggered (>50 messages). Summary:\n" + summary;
+                                compactMsg.content = "Auto-compact triggered. " + result.statusMessage;
                                 chatMessages_.push_back(compactMsg);
                                 totalInputTokens_ = agentLoop_->totalInputTokens();
                                 totalOutputTokens_ = agentLoop_->totalOutputTokens();
@@ -427,8 +540,13 @@ void TUI::run() {
             }
         }
 
-        // Up arrow - scroll when input empty, otherwise previous input
+        // F-4: Up arrow - navigate suggestions when visible (AC-14)
         if (event == Event::ArrowUp) {
+            if (showSuggestions_) {
+                std::lock_guard<std::mutex> lock(chatMutex);
+                if (suggestionIndex_ > 0) suggestionIndex_--;
+                return true;
+            }
             if (inputText.empty() || isGenerating_) {
                 scrollToBottom.store(false);
                 return false; // Let FTXUI handle
@@ -438,8 +556,20 @@ void TUI::run() {
             return true;
         }
 
-        // Down arrow - scroll when input empty, otherwise next input
+        // F-4: Down arrow - navigate suggestions when visible (AC-14)
         if (event == Event::ArrowDown) {
+            if (showSuggestions_) {
+                std::lock_guard<std::mutex> lock(chatMutex);
+                // Filter to find max index
+                int maxIdx = 0;
+                for (auto& cmd : slashCommands_) {
+                    if (cmd.command.find(inputText) == 0 || inputText == "/") {
+                        maxIdx++;
+                    }
+                }
+                if (suggestionIndex_ < maxIdx - 1) suggestionIndex_++;
+                return true;
+            }
             if (inputText.empty() || isGenerating_) {
                 return false; // Let FTXUI handle
             }

@@ -14,6 +14,16 @@ struct AgentCallbacks {
     std::function<bool()> cancelCheck;
 };
 
+struct CompactResult {
+    std::string summary;
+    int originalMessageCount = 0;
+    int remainingMessageCount = 0;
+    double tokensSaved = 0;
+    bool success = false;
+    std::string error;
+    std::string statusMessage;
+};
+
 class AgentLoop {
 public:
     AgentLoop(std::shared_ptr<LLMProvider> provider, SessionManager& session);
@@ -28,8 +38,8 @@ public:
         int maxRounds = 20
     );
 
-    // Compact/summarize the conversation history
-    std::string compact(const std::string& systemPrompt);
+    // Compact/summarize the conversation history with three-layer architecture
+    CompactResult compact(const std::string& systemPrompt);
 
     int totalInputTokens() const { return totalInputTokens_; }
     int totalOutputTokens() const { return totalOutputTokens_; }

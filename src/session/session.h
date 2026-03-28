@@ -22,6 +22,12 @@ public:
     int messageCount() const { return static_cast<int>(history_.size()); }
     std::vector<Message> getHistory() const { return history_; }
 
+    // Token estimation: (total_chars / 4) * 1.2
+    double estimateTokens() const;
+
+    // Get most recent messages fitting within tokenLimit, iterating from newest to oldest
+    std::vector<Message> getRecentMessages(int tokenLimit) const;
+
     std::string currentSessionId() const { return currentSessionId_; }
 
 private:

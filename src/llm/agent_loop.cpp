@@ -1,4 +1,6 @@
 #include "agent_loop.h"
+#include <future>
+#include <mutex>
 
 namespace opencodecpp {
 
@@ -102,25 +104,41 @@ LLMResponse AgentLoop::run(
             break;
         }
 
-        // Execute tool calls
+        // Execute tool calls in parallel using std::async (F-5: AC-16, AC-17, AC-18, AC-19)
+        std::vector<std::future<std::pair<ToolCall, nlohmann::json>>> futures;
+        std::mutex callbackMutex;
+
         for (auto& tc : resp.tool_calls) {
-            if (callbacks.onToolStatus) {
-                callbacks.onToolStatus(tc.name, "running");
-            }
+            futures.push_back(std::async(std::launch::async, [&, tc]() {
+                {
+                    std::lock_guard<std::mutex> lock(callbackMutex);
+                    if (callbacks.onToolStatus) {
+                        callbacks.onToolStatus(tc.name, "running");
+                    }
+                }
 
-            nlohmann::json result;
-            auto it = tools_.find(tc.name);
-            if (it != tools_.end()) {
-                result = it->second->execute(tc.arguments);
-            } else {
-                result = {{"error", "Unknown tool: " + tc.name}};
-            }
+                nlohmann::json result;
+                auto it = tools_.find(tc.name);
+                if (it != tools_.end()) {
+                    result = it->second->execute(tc.arguments);
+                } else {
+                    result = {{"error", "Unknown tool: " + tc.name}};
+                }
 
-            if (callbacks.onToolStatus) {
-                callbacks.onToolStatus(tc.name, "done");
-            }
+                {
+                    std::lock_guard<std::mutex> lock(callbackMutex);
+                    if (callbacks.onToolStatus) {
+                        callbacks.onToolStatus(tc.name, "done");
+                    }
+                }
 
-            // Add tool result message
+                return std::make_pair(tc, result);
+            }));
+        }
+
+        // Collect all results before adding to message history
+        for (auto& f : futures) {
+            auto [tc, result] = f.get();
             Message toolMsg;
             toolMsg.role = "tool";
             toolMsg.content = result.dump();
@@ -136,23 +154,92 @@ LLMResponse AgentLoop::run(
     return finalResponse;
 }
 
-std::string AgentLoop::compact(const std::string& systemPrompt) {
+CompactResult AgentLoop::compact(const std::string& systemPrompt) {
+    CompactResult result;
     auto history = session_.getHistory();
-    if (history.empty()) return "";
+    result.originalMessageCount = static_cast<int>(history.size());
 
-    // Build conversation text
-    std::string convText;
+    if (history.empty()) {
+        result.error = "No messages to compact";
+        return result;
+    }
+
+    // Estimate tokens before compaction
+    double tokensBefore = session_.estimateTokens();
+
+    // Three-layer architecture:
+    // Layer 1: System prompt messages (preserved, never sent for summarization)
+    // Layer 2: Recent ~20000 tokens of messages (kept intact)
+    // Layer 3: Older messages (sent to LLM for summarization, replaced by summary)
+
+    std::vector<Message> systemMessages;
+    std::vector<Message> nonSystemMessages;
+
     for (auto& msg : history) {
+        if (msg.role == "system") {
+            systemMessages.push_back(msg);
+        } else {
+            nonSystemMessages.push_back(msg);
+        }
+    }
+
+    // Get recent messages (~20000 tokens worth)
+    const int recentTokenLimit = 20000;
+    std::vector<Message> recentMessages;
+    std::vector<Message> olderMessages;
+
+    double accumulatedTokens = 0.0;
+    int splitIndex = static_cast<int>(nonSystemMessages.size());
+
+    // Iterate from newest to oldest to find recent messages
+    for (int i = static_cast<int>(nonSystemMessages.size()) - 1; i >= 0; i--) {
+        size_t chars = 0;
+        if (nonSystemMessages[i].content.is_string()) {
+            chars = nonSystemMessages[i].content.get<std::string>().size();
+        } else {
+            chars = nonSystemMessages[i].content.dump().size();
+        }
+        double msgTokens = (static_cast<double>(chars) / 4.0) * 1.2;
+
+        if (accumulatedTokens + msgTokens > recentTokenLimit && !recentMessages.empty()) {
+            splitIndex = i + 1;
+            break;
+        }
+        recentMessages.insert(recentMessages.begin(), nonSystemMessages[i]);
+        accumulatedTokens += msgTokens;
+        if (i == 0) splitIndex = 0;
+    }
+
+    // Older messages are everything before the split
+    for (int i = 0; i < splitIndex; i++) {
+        olderMessages.push_back(nonSystemMessages[i]);
+    }
+
+    // If there are no older messages to summarize, nothing to compact
+    if (olderMessages.empty()) {
+        result.error = "Not enough messages to compact";
+        return result;
+    }
+
+    // Build conversation text from older messages for summarization
+    std::string convText;
+    for (auto& msg : olderMessages) {
         convText += msg.role + ": ";
         if (msg.content.is_string()) convText += msg.content.get<std::string>();
         else convText += msg.content.dump();
         convText += "\n";
     }
 
+    // Send the Codex CONTEXT CHECKPOINT COMPACTION prompt (AC-7)
     std::string compactPrompt =
-        "Summarize the following conversation. Include: current progress, "
-        "key decisions, remaining tasks, critical file paths. "
-        "Keep under 2000 tokens. Output only the summary.\n\n" + convText;
+        "You are performing a CONTEXT CHECKPOINT COMPACTION. "
+        "Create a handoff summary for another LLM that will resume the task. "
+        "Include: 1) Current progress and key decisions made, "
+        "2) Important context, constraints, or user preferences, "
+        "3) What remains to be done (clear next steps), "
+        "4) Any critical data, file paths, examples, or references needed to continue. "
+        "Be concise, structured, and focused on helping the next LLM seamlessly continue the work.\n\n"
+        "Conversation to summarize:\n" + convText;
 
     Message compactMsg;
     compactMsg.role = "user";
@@ -160,17 +247,71 @@ std::string AgentLoop::compact(const std::string& systemPrompt) {
 
     auto resp = provider_->sendMessage({compactMsg}, {}, systemPrompt);
 
-    if (!resp.error.empty()) return "Error: " + resp.error;
-
-    Message summaryMsg;
-    summaryMsg.role = "user";
-    summaryMsg.content = "[Conversation Summary]\n" + resp.content;
-    session_.clearAndReplace(summaryMsg);
+    if (!resp.error.empty()) {
+        result.error = "Error: " + resp.error;
+        return result;
+    }
 
     totalInputTokens_ += resp.input_tokens;
     totalOutputTokens_ += resp.output_tokens;
 
-    return resp.content;
+    // Build the summary message with the required prefix (AC-9)
+    std::string summaryPrefix =
+        "Another language model started to solve this problem and produced a summary of its thinking process. "
+        "You also have access to the state of the tools that were used. "
+        "Use this to build on the work that has already been done and avoid duplicating work. "
+        "Here is the summary:";
+
+    Message summaryMsg;
+    summaryMsg.role = "user";
+    summaryMsg.content = summaryPrefix + "\n\n" + resp.content;
+
+    // Rebuild history with three layers:
+    // Layer 1: system messages (preserved)
+    // Layer 3: compressed summary (replacing older messages)
+    // Layer 2: recent messages (intact)
+    std::vector<Message> newHistory;
+
+    // Add system messages first
+    for (auto& msg : systemMessages) {
+        newHistory.push_back(msg);
+    }
+
+    // Add summary message
+    newHistory.push_back(summaryMsg);
+
+    // Add recent messages
+    for (auto& msg : recentMessages) {
+        newHistory.push_back(msg);
+    }
+
+    // Replace session history
+    session_.clearAndReplace(newHistory[0]);
+    for (size_t i = 1; i < newHistory.size(); i++) {
+        session_.addMessage(newHistory[i], session_.currentSessionId());
+    }
+
+    // But clearAndReplace only keeps one message, so we need to rebuild properly
+    // Actually, let's use clearAndReplace for the first, then addMessage for rest
+    // Wait - clearAndReplace clears and adds one. But we actually need to clear and
+    // replace with multiple messages. Let's just manipulate directly.
+    // The clearAndReplace clears history_ and pushes one msg.
+    // Then addMessage pushes to history_ too. So this pattern works.
+
+    // Calculate stats
+    double tokensAfter = session_.estimateTokens();
+    result.summary = resp.content;
+    result.remainingMessageCount = static_cast<int>(newHistory.size());
+    result.tokensSaved = tokensBefore - tokensAfter;
+    result.success = true;
+
+    // Build status message (AC-10)
+    result.statusMessage = "Context compacted: " +
+        std::to_string(result.originalMessageCount) + " messages -> summary + " +
+        std::to_string(static_cast<int>(recentMessages.size())) + " recent messages. " +
+        "Tokens saved: " + std::to_string(static_cast<int>(result.tokensSaved));
+
+    return result;
 }
 
 } // namespace opencodecpp

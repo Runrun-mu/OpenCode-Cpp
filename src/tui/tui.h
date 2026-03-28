@@ -8,8 +8,15 @@
 #include "../skills/skill_tool.h"
 #include <memory>
 #include <atomic>
+#include <string>
+#include <vector>
 
 namespace opencodecpp {
+
+struct SlashCommand {
+    std::string command;
+    std::string description;
+};
 
 class TUI {
 public:
@@ -37,6 +44,17 @@ private:
 
     int totalInputTokens_ = 0;
     int totalOutputTokens_ = 0;
+
+    // Slash command auto-suggestion (F-4)
+    std::vector<SlashCommand> slashCommands_ = {
+        {"/compact", "Compact conversation history"},
+        {"/status", "Show session status"},
+        {"/skill", "Manage skills"},
+        {"/clear", "Clear chat display"},
+        {"/help", "Show available commands"}
+    };
+    int suggestionIndex_ = 0;
+    bool showSuggestions_ = false;
 
     // Price per 1M tokens
     static constexpr double CLAUDE_INPUT_PRICE = 3.0;
