@@ -75,7 +75,8 @@ void test_ac2_uses_focus_on_last_element() {
     std::string content = readSourceFile("src/tui/tui.cpp");
     // Should focus last element when scrollToBottom is true
     ASSERT_TRUE(content.find("focus") != std::string::npos);
-    ASSERT_TRUE(content.find("chatElements.back()") != std::string::npos);
+    ASSERT_TRUE(content.find("chatElements[selected_]") != std::string::npos ||
+                content.find("chatElements.back()") != std::string::npos);
 }
 
 // AC-3: User can scroll up and auto-scroll stops

@@ -51,10 +51,17 @@ private:
         {"/status", "Show session status"},
         {"/skill", "Manage skills"},
         {"/clear", "Clear chat display"},
-        {"/help", "Show available commands"}
+        {"/help", "Show available commands"},
+        {"/plan", "Analyze and plan without modifying code"},
+        {"/execute", "Execute the last plan"}
     };
     int suggestionIndex_ = 0;
     bool showSuggestions_ = false;
+
+    // Plan mode (F-2, F-3)
+    std::atomic<bool> planMode_{false};
+    std::string lastPlanOutput_;
+    std::string lastPlanPrompt_;
 
     // Price per 1M tokens
     static constexpr double CLAUDE_INPUT_PRICE = 3.0;

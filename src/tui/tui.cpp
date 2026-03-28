@@ -170,6 +170,56 @@ bool TUI::handleSlashCommand(const std::string& input, std::mutex& chatMutex) {
         return true;
     }
 
+    // Handle /plan command
+    if (input.substr(0, 5) == "/plan") {
+        std::string prompt = input.size() > 6 ? input.substr(6) : "";
+        size_t start = prompt.find_first_not_of(" \t");
+        if (start != std::string::npos) prompt = prompt.substr(start);
+        else prompt.clear();
+
+        if (prompt.empty()) {
+            ChatMessage sysMsg;
+            sysMsg.role = "tool";
+            sysMsg.toolName = "plan";
+            sysMsg.toolStatus = "done";
+            sysMsg.content = "Usage: /plan <prompt>";
+            chatMessages_.push_back(sysMsg);
+            return true;
+        }
+
+        planMode_.store(true);
+        lastPlanPrompt_ = prompt;
+
+        ChatMessage startMsg;
+        startMsg.role = "tool";
+        startMsg.toolName = "plan";
+        startMsg.toolStatus = "running";
+        startMsg.content = "Planning: " + prompt;
+        chatMessages_.push_back(startMsg);
+        return true; // Will be handled asynchronously
+    }
+
+    // Handle /execute command
+    if (input.substr(0, 8) == "/execute") {
+        if (lastPlanOutput_.empty()) {
+            ChatMessage sysMsg;
+            sysMsg.role = "tool";
+            sysMsg.toolName = "execute";
+            sysMsg.toolStatus = "done";
+            sysMsg.content = "Error: No plan available. Run /plan <prompt> first.";
+            chatMessages_.push_back(sysMsg);
+            return true;
+        }
+
+        ChatMessage startMsg;
+        startMsg.role = "tool";
+        startMsg.toolName = "execute";
+        startMsg.toolStatus = "running";
+        startMsg.content = "Executing plan...";
+        chatMessages_.push_back(startMsg);
+        return true; // Will be handled asynchronously
+    }
+
     // Handle /skill command
     if (input.substr(0, 6) != "/skill") return false;
 
@@ -216,11 +266,16 @@ void TUI::run() {
     std::string inputText;
     std::mutex chatMutex;
     std::atomic<bool> scrollToBottom{true};
+    int selected_ = 0;  // ScrollableContainer selected index
 
     // Input component
     auto inputOption = InputOption();
     inputOption.multiline = false;
     auto inputComponent = Input(&inputText, "Type your message...", inputOption);
+
+    // ScrollableContainer: a true FTXUI Component that wraps chat messages
+    // This replaces the DOM-only yframe approach so scroll events are properly handled
+    auto scrollableContainer = Make<ComponentBase>();
 
     // Main renderer
     auto renderer = Renderer(inputComponent, [&] {
@@ -239,9 +294,20 @@ void TUI::run() {
             );
         }
 
-        // F-1: FTXUI native scrolling - focus last element for auto-scroll
+        // ScrollableContainer: auto-scroll when scrollToBottom is true
         if (scrollToBottom.load() && !chatElements.empty()) {
-            chatElements.back() = chatElements.back() | focus;
+            selected_ = static_cast<int>(chatElements.size()) - 1;
+        }
+
+        // Clamp selected_
+        if (selected_ < 0) selected_ = 0;
+        if (!chatElements.empty() && selected_ >= static_cast<int>(chatElements.size())) {
+            selected_ = static_cast<int>(chatElements.size()) - 1;
+        }
+
+        // Apply focus to selected element for yframe scrolling
+        if (!chatElements.empty() && selected_ >= 0 && selected_ < static_cast<int>(chatElements.size())) {
+            chatElements[selected_] = chatElements[selected_] | focus;
         }
         auto chatBox = vbox(chatElements) | vscroll_indicator | yframe | flex;
 
@@ -282,12 +348,13 @@ void TUI::run() {
             }
         }
 
-        // Status bar
+        // Status bar with plan mode indicator
         auto statusBar = renderStatusBar(
             config_.getModel(),
             totalInputTokens_,
             totalOutputTokens_,
-            calculateCost()
+            calculateCost(),
+            planMode_.load()
         );
 
         Elements layout;
@@ -302,7 +369,7 @@ void TUI::run() {
         return vbox(layout);
     });
 
-    // Event handler
+    // Event handler - ScrollableContainer handles scroll events as a Component
     auto component = CatchEvent(renderer, [&](Event event) {
         // Ctrl+C handling
         if (event == Event::Special("\x03")) {
@@ -383,12 +450,21 @@ void TUI::run() {
                 {
                     std::lock_guard<std::mutex> lock(chatMutex);
 
-                    // Check for slash commands (/skill, /status, /compact, /clear, /help)
+                    // Check for slash commands
                     if (msg[0] == '/' && handleSlashCommand(msg, chatMutex)) {
                         // /compact needs async handling
                         if (msg.substr(0, 8) == "/compact") {
                             // Will run compact in background thread below
-                        } else {
+                        }
+                        // /plan needs async handling
+                        else if (msg.substr(0, 5) == "/plan" && msg.size() > 6) {
+                            // Will run plan in background thread below
+                        }
+                        // /execute needs async handling
+                        else if (msg.substr(0, 8) == "/execute" && !lastPlanOutput_.empty()) {
+                            // Will run execute in background thread below
+                        }
+                        else {
                             scrollToBottom.store(true);
                             return true;
                         }
@@ -416,6 +492,168 @@ void TUI::run() {
                                     doneMsg.content = result.statusMessage + "\n\nSummary:\n" + result.summary;
                                 }
                                 chatMessages_.push_back(doneMsg);
+                            }
+                            screen.Post(Event::Custom);
+                        }).detach();
+                        return true;
+                    }
+
+                    // If /plan, run in background with read-only tools
+                    if (msg.substr(0, 5) == "/plan" && msg.size() > 6) {
+                        scrollToBottom.store(true);
+                        isGenerating_ = true;
+                        cancelGeneration_ = false;
+
+                        // Add assistant message placeholder
+                        ChatMessage aiMsg;
+                        aiMsg.role = "assistant";
+                        aiMsg.content = "";
+                        chatMessages_.push_back(aiMsg);
+
+                        std::string planPrompt = msg.substr(6);
+                        std::thread([this, planPrompt, &chatMutex, &screen, &scrollToBottom]() {
+                            std::string systemPrompt =
+                                "You are an AI coding assistant in PLAN MODE. "
+                                "Analyze the codebase and create a structured implementation plan. "
+                                "Do not modify any files. Only analyze, read, and plan. "
+                                "Your output should be a clear, actionable plan that can be executed later.";
+
+                            if (!config_.custom_instructions.empty()) {
+                                systemPrompt += "\n\nCustom instructions: " + config_.custom_instructions;
+                            }
+
+                            AgentCallbacks callbacks;
+                            callbacks.onToken = [this, &chatMutex, &screen](const std::string& token) {
+                                std::lock_guard<std::mutex> lock(chatMutex);
+                                if (!chatMessages_.empty() && chatMessages_.back().role == "assistant") {
+                                    chatMessages_.back().content += token;
+                                }
+                                screen.Post(Event::Custom);
+                            };
+                            callbacks.onToolStatus = [this, &chatMutex, &screen](const std::string& name, const std::string& status) {
+                                std::lock_guard<std::mutex> lock(chatMutex);
+                                ChatMessage toolMsg;
+                                toolMsg.role = "tool";
+                                toolMsg.toolName = name;
+                                toolMsg.toolStatus = status;
+                                if (chatMessages_.size() >= 2) {
+                                    chatMessages_.insert(chatMessages_.end() - 1, toolMsg);
+                                }
+                                screen.Post(Event::Custom);
+                            };
+                            callbacks.cancelCheck = [this]() -> bool {
+                                return cancelGeneration_.load();
+                            };
+
+                            std::vector<std::string> allowedTools = {"file_read", "glob", "grep", "ls"};
+                            auto resp = agentLoop_->runPlan(planPrompt, systemPrompt, allowedTools, callbacks);
+
+                            {
+                                std::lock_guard<std::mutex> lock(chatMutex);
+                                totalInputTokens_ = agentLoop_->totalInputTokens();
+                                totalOutputTokens_ = agentLoop_->totalOutputTokens();
+                                isGenerating_ = false;
+                                planMode_.store(false);
+
+                                // Store plan output for /execute
+                                if (!resp.content.empty()) {
+                                    lastPlanOutput_ = resp.content;
+                                } else if (!chatMessages_.empty() && chatMessages_.back().role == "assistant") {
+                                    lastPlanOutput_ = chatMessages_.back().content;
+                                }
+
+                                if (!resp.error.empty()) {
+                                    ChatMessage errMsg;
+                                    errMsg.role = "assistant";
+                                    errMsg.content = "Error: " + resp.error;
+                                    chatMessages_.push_back(errMsg);
+                                }
+
+                                ChatMessage doneMsg;
+                                doneMsg.role = "tool";
+                                doneMsg.toolName = "plan";
+                                doneMsg.toolStatus = "done";
+                                doneMsg.content = "Plan complete. Use /execute to run the plan.";
+                                chatMessages_.push_back(doneMsg);
+                            }
+                            screen.Post(Event::Custom);
+                        }).detach();
+                        return true;
+                    }
+
+                    // If /execute, run with full tool access
+                    if (msg.substr(0, 8) == "/execute" && !lastPlanOutput_.empty()) {
+                        scrollToBottom.store(true);
+                        isGenerating_ = true;
+                        cancelGeneration_ = false;
+
+                        std::string executePrompt = "Execute the following plan:\n\n" + lastPlanOutput_ +
+                            "\n\nOriginal request: " + lastPlanPrompt_;
+
+                        // Add user message and assistant placeholder
+                        ChatMessage userMsg;
+                        userMsg.role = "user";
+                        userMsg.content = executePrompt;
+                        chatMessages_.push_back(userMsg);
+
+                        ChatMessage aiMsg;
+                        aiMsg.role = "assistant";
+                        aiMsg.content = "";
+                        chatMessages_.push_back(aiMsg);
+
+                        std::thread([this, executePrompt, &chatMutex, &screen, &scrollToBottom]() {
+                            std::string systemPrompt =
+                                "You are an AI coding assistant. Help the user with their programming tasks. "
+                                "You have access to tools for reading, writing, and editing files, "
+                                "running shell commands, and searching the codebase.";
+
+                            if (!config_.custom_instructions.empty()) {
+                                systemPrompt += "\n\nCustom instructions: " + config_.custom_instructions;
+                            }
+
+                            std::string skillPrompt = skillManager_.getActiveSkillPrompt();
+                            if (!skillPrompt.empty()) {
+                                systemPrompt += skillPrompt;
+                            }
+
+                            AgentCallbacks callbacks;
+                            callbacks.onToken = [this, &chatMutex, &screen](const std::string& token) {
+                                std::lock_guard<std::mutex> lock(chatMutex);
+                                if (!chatMessages_.empty() && chatMessages_.back().role == "assistant") {
+                                    chatMessages_.back().content += token;
+                                }
+                                screen.Post(Event::Custom);
+                            };
+                            callbacks.onToolStatus = [this, &chatMutex, &screen](const std::string& name, const std::string& status) {
+                                std::lock_guard<std::mutex> lock(chatMutex);
+                                ChatMessage toolMsg;
+                                toolMsg.role = "tool";
+                                toolMsg.toolName = name;
+                                toolMsg.toolStatus = status;
+                                if (chatMessages_.size() >= 2) {
+                                    chatMessages_.insert(chatMessages_.end() - 1, toolMsg);
+                                }
+                                screen.Post(Event::Custom);
+                            };
+                            callbacks.cancelCheck = [this]() -> bool {
+                                return cancelGeneration_.load();
+                            };
+
+                            auto resp = agentLoop_->run(executePrompt, systemPrompt, callbacks);
+
+                            {
+                                std::lock_guard<std::mutex> lock(chatMutex);
+                                totalInputTokens_ = agentLoop_->totalInputTokens();
+                                totalOutputTokens_ = agentLoop_->totalOutputTokens();
+                                isGenerating_ = false;
+                                planMode_.store(false);
+
+                                if (!resp.error.empty()) {
+                                    ChatMessage errMsg;
+                                    errMsg.role = "assistant";
+                                    errMsg.content = "Error: " + resp.error;
+                                    chatMessages_.push_back(errMsg);
+                                }
                             }
                             screen.Post(Event::Custom);
                         }).detach();
@@ -506,37 +744,55 @@ void TUI::run() {
             return true;
         }
 
-        // Page Up - scroll up (AC-3/AC-5: FTXUI handles natively via yframe)
+        // ScrollableContainer event handling - these return true to consume the event
+        // This is the key fix: events are handled by our Component, not passed to inputComponent
+
+        // Page Up - scroll up
         if (event == Event::PageUp) {
+            std::lock_guard<std::mutex> lock(chatMutex);
             scrollToBottom.store(false);
-            return false; // Let FTXUI handle the actual scrolling
-        }
-
-        // Page Down - scroll down (AC-5)
-        if (event == Event::PageDown) {
-            return false; // Let FTXUI handle the actual scrolling
-        }
-
-        // Home - jump to top (AC-3)
-        if (event == Event::Home) {
-            scrollToBottom.store(false);
-            return false; // Let FTXUI handle
-        }
-
-        // End - jump to bottom (AC-4)
-        if (event == Event::End) {
-            scrollToBottom.store(true);
+            selected_ = std::max(0, selected_ - 10);
             return true;
         }
 
-        // Mouse wheel scroll (AC-3)
+        // Page Down - scroll down
+        if (event == Event::PageDown) {
+            std::lock_guard<std::mutex> lock(chatMutex);
+            int maxIdx = static_cast<int>(chatMessages_.size()) * 2 - 1;
+            selected_ = std::min(maxIdx, selected_ + 10);
+            return true;
+        }
+
+        // Home - jump to top
+        if (event == Event::Home) {
+            std::lock_guard<std::mutex> lock(chatMutex);
+            scrollToBottom.store(false);
+            selected_ = 0;
+            return true;
+        }
+
+        // End - jump to bottom, re-enable auto-scroll
+        if (event == Event::End) {
+            std::lock_guard<std::mutex> lock(chatMutex);
+            scrollToBottom.store(true);
+            int maxIdx = static_cast<int>(chatMessages_.size()) * 2 - 1;
+            selected_ = std::max(0, maxIdx);
+            return true;
+        }
+
+        // Mouse wheel scroll - handled by ScrollableContainer Component
         if (event.is_mouse()) {
             if (event.mouse().button == Mouse::WheelUp) {
+                std::lock_guard<std::mutex> lock(chatMutex);
                 scrollToBottom.store(false);
-                return false; // Let FTXUI handle
+                selected_ = std::max(0, selected_ - 3);
+                return true;
             }
             if (event.mouse().button == Mouse::WheelDown) {
-                return false; // Let FTXUI handle
+                std::lock_guard<std::mutex> lock(chatMutex);
+                int maxIdx = static_cast<int>(chatMessages_.size()) * 2 - 1;
+                selected_ = std::min(std::max(0, maxIdx), selected_ + 3);
+                return true;
             }
         }
 
@@ -548,8 +804,10 @@ void TUI::run() {
                 return true;
             }
             if (inputText.empty() || isGenerating_) {
+                std::lock_guard<std::mutex> lock(chatMutex);
                 scrollToBottom.store(false);
-                return false; // Let FTXUI handle
+                selected_ = std::max(0, selected_ - 1);
+                return true;
             }
             std::string prev = inputHandler_.getPreviousInput();
             if (!prev.empty()) inputText = prev;
@@ -571,7 +829,10 @@ void TUI::run() {
                 return true;
             }
             if (inputText.empty() || isGenerating_) {
-                return false; // Let FTXUI handle
+                std::lock_guard<std::mutex> lock(chatMutex);
+                int maxIdx = static_cast<int>(chatMessages_.size()) * 2 - 1;
+                selected_ = std::min(std::max(0, maxIdx), selected_ + 1);
+                return true;
             }
             inputText = inputHandler_.getNextInput();
             return true;

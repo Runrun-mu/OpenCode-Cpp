@@ -20,7 +20,8 @@ ftxui::Element renderStatusBar(
     const std::string& modelName,
     int inputTokens,
     int outputTokens,
-    double cost
+    double cost,
+    bool planMode = false
 );
 
 // Parse content for code blocks and render with syntax highlighting

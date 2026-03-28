@@ -38,6 +38,15 @@ public:
         int maxRounds = 20
     );
 
+    // Run the agent loop with only the specified tools (for plan mode)
+    LLMResponse runPlan(
+        const std::string& userMessage,
+        const std::string& systemPrompt,
+        const std::vector<std::string>& allowedTools,
+        AgentCallbacks callbacks = {},
+        int maxRounds = 20
+    );
+
     // Compact/summarize the conversation history with three-layer architecture
     CompactResult compact(const std::string& systemPrompt);
 

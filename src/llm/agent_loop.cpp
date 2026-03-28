@@ -154,6 +154,47 @@ LLMResponse AgentLoop::run(
     return finalResponse;
 }
 
+LLMResponse AgentLoop::runPlan(
+    const std::string& userMessage,
+    const std::string& systemPrompt,
+    const std::vector<std::string>& allowedTools,
+    AgentCallbacks callbacks,
+    int maxRounds
+) {
+    // Save original tools
+    auto originalToolDefs = toolDefs_;
+    auto originalTools = tools_;
+
+    // Filter to only allowed tools
+    std::vector<ToolDef> filteredDefs;
+    std::map<std::string, std::shared_ptr<Tool>> filteredTools;
+
+    for (const auto& toolName : allowedTools) {
+        auto it = originalTools.find(toolName);
+        if (it != originalTools.end()) {
+            filteredTools[toolName] = it->second;
+            for (const auto& def : originalToolDefs) {
+                if (def.name == toolName) {
+                    filteredDefs.push_back(def);
+                    break;
+                }
+            }
+        }
+    }
+
+    toolDefs_ = filteredDefs;
+    tools_ = filteredTools;
+
+    // Delegate to run() for actual execution
+    auto result = run(userMessage, systemPrompt, callbacks, maxRounds);
+
+    // Restore original tools
+    toolDefs_ = originalToolDefs;
+    tools_ = originalTools;
+
+    return result;
+}
+
 CompactResult AgentLoop::compact(const std::string& systemPrompt) {
     CompactResult result;
     auto history = session_.getHistory();

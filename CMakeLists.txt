@@ -141,3 +141,11 @@ add_test(NAME test_sprint_f4_suggestions COMMAND test_sprint_f4_suggestions)
 add_executable(test_sprint_f5_parallel tests/test_sprint_f5_parallel.cpp)
 target_link_libraries(test_sprint_f5_parallel PRIVATE opencodecpp_lib)
 add_test(NAME test_sprint_f5_parallel COMMAND test_sprint_f5_parallel)
+
+add_executable(test_scroll_container tests/test_scroll_container.cpp)
+target_link_libraries(test_scroll_container PRIVATE opencodecpp_lib)
+add_test(NAME test_scroll_container COMMAND test_scroll_container)
+
+add_executable(test_plan_mode tests/test_plan_mode.cpp)
+target_link_libraries(test_plan_mode PRIVATE opencodecpp_lib)
+add_test(NAME test_plan_mode COMMAND test_plan_mode)

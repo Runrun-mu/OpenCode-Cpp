@@ -84,9 +84,10 @@ void test_ac1_no_viewportHeight_atomic() {
 
 void test_ac2_focus_on_last_element() {
     std::string content = readSourceFile("src/tui/tui.cpp");
-    // Should use focus on last element for auto-scroll
+    // Should use focus on selected element for auto-scroll
     ASSERT_TRUE(content.find("focus") != std::string::npos);
-    ASSERT_TRUE(content.find("chatElements.back()") != std::string::npos);
+    ASSERT_TRUE(content.find("chatElements[selected_]") != std::string::npos ||
+                content.find("chatElements.back()") != std::string::npos);
 }
 
 void test_ac2_scrollToBottom_flag_exists() {

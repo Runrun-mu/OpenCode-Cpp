@@ -34,19 +34,25 @@ Element renderStatusBar(
     const std::string& modelName,
     int inputTokens,
     int outputTokens,
-    double cost
+    double cost,
+    bool planMode
 ) {
     char costStr[32];
     snprintf(costStr, sizeof(costStr), "$%.4f", cost);
 
-    return hbox({
-        text(" Model: " + modelName) | bold,
-        text(" │ "),
-        text("Tokens: " + std::to_string(inputTokens) + "/" + std::to_string(outputTokens)),
-        text(" │ "),
-        text("Cost: " + std::string(costStr)),
-        text(" "),
-    }) | bgcolor(Color::GrayDark) | color(Color::White);
+    Elements elements;
+    if (planMode) {
+        elements.push_back(text(" [PLAN MODE] ") | bold | color(Color::Yellow));
+        elements.push_back(text("│ "));
+    }
+    elements.push_back(text(" Model: " + modelName) | bold);
+    elements.push_back(text(" │ "));
+    elements.push_back(text("Tokens: " + std::to_string(inputTokens) + "/" + std::to_string(outputTokens)));
+    elements.push_back(text(" │ "));
+    elements.push_back(text("Cost: " + std::string(costStr)));
+    elements.push_back(text(" "));
+
+    return hbox(elements) | bgcolor(Color::GrayDark) | color(Color::White);
 }
 
 } // namespace opencodecpp
