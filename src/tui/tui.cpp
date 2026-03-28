@@ -8,6 +8,10 @@
 #include "../tools/glob.h"
 #include "../tools/grep.h"
 #include "../tools/ls.h"
+#include "../tools/web_search.h"
+#include "../tools/web_fetch.h"
+#include "../tools/subagent.h"
+#include "../auth/codex_auth.h"
 
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/screen_interactive.hpp>
@@ -39,6 +43,19 @@ TUI::TUI(Config& config) : config_(config) {
 
     // Create LLM provider
     std::string provider = config_.getProvider();
+
+    // AC-24: When auth_mode is "codex", use Codex auth token
+    if (config_.auth_mode == "codex") {
+        std::string token = CodexAuth::loadCachedToken();
+        if (token.empty()) {
+            token = CodexAuth::authenticate();
+        }
+        if (!token.empty()) {
+            config_.openai_api_key = token;
+            provider = "openai";
+        }
+    }
+
     if (provider == "openai") {
         provider_ = std::make_shared<OpenAIProvider>(
             config_.openai_api_key, config_.getModel(), config_.openai_base_url
@@ -83,6 +100,15 @@ void TUI::setupTools() {
     agentLoop_->registerTool(std::make_shared<GrepTool>());
     agentLoop_->registerTool(std::make_shared<LsTool>());
     agentLoop_->registerTool(std::make_shared<SkillTool>(skillManager_));
+    agentLoop_->registerTool(std::make_shared<WebSearchTool>());
+    agentLoop_->registerTool(std::make_shared<WebFetchTool>());
+
+    // AC-15: Register subagent tool with provider and available tools
+    auto subagentTool = std::make_shared<SubagentTool>();
+    subagentTool->setProvider(provider_);
+    agentLoop_->registerTool(subagentTool);
+    // After registering all tools, set available tools on subagent
+    subagentTool->setAvailableTools(agentLoop_->getTools());
 }
 
 double TUI::calculateCost() const {
@@ -439,6 +465,28 @@ void TUI::run() {
                     suggestionIndex_ = 0;
                     return true;
                 }
+            }
+
+            // AC-11, AC-12, AC-13: Steer input during generation
+            if (!inputText.empty() && isGenerating_) {
+                std::string steerText = inputText;
+                inputText.clear();
+                showSuggestions_ = false;
+                suggestionIndex_ = 0;
+
+                {
+                    std::lock_guard<std::mutex> lock(chatMutex);
+                    // AC-13: Display steer message with [Steer] prefix
+                    ChatMessage steerMsg;
+                    steerMsg.role = "user";
+                    steerMsg.content = "[Steer] " + steerText;
+                    chatMessages_.push_back(steerMsg);
+
+                    // AC-12: Queue steer for injection into agent loop
+                    agentLoop_->addSteer(steerText);
+                    scrollToBottom.store(true);
+                }
+                return true;
             }
 
             if (!inputText.empty() && !isGenerating_) {

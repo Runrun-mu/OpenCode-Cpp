@@ -137,6 +137,8 @@ Config Config::fromArgs(int argc, char* argv[]) {
             cfg.cli_provider = argv[++i];
         } else if (arg == "--session" && i + 1 < argc) {
             cfg.session_id = argv[++i];
+        } else if (arg == "--auth" && i + 1 < argc) {
+            cfg.auth_mode = argv[++i];
         }
     }
 

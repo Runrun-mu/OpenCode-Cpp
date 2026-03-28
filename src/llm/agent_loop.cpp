@@ -16,6 +16,12 @@ void AgentLoop::registerTool(std::shared_ptr<Tool> tool) {
     tools_[tool->name()] = tool;
 }
 
+// AC-12, AC-14: Add steer message to queue
+void AgentLoop::addSteer(const std::string& steerText) {
+    std::lock_guard<std::mutex> lock(steerMutex_);
+    steerQueue_.push(steerText);
+}
+
 LLMResponse AgentLoop::run(
     const std::string& userMessage,
     const std::string& systemPrompt,
@@ -36,6 +42,20 @@ LLMResponse AgentLoop::run(
         if (callbacks.cancelCheck && callbacks.cancelCheck()) {
             finalResponse.content = "[Generation cancelled]";
             break;
+        }
+
+        // AC-14: Check steer queue at the beginning of each iteration
+        {
+            std::lock_guard<std::mutex> lock(steerMutex_);
+            while (!steerQueue_.empty()) {
+                std::string steerText = steerQueue_.front();
+                steerQueue_.pop();
+                Message steerMsg;
+                steerMsg.role = "user";
+                steerMsg.content = "[Steer] " + steerText;
+                session_.addMessage(steerMsg, session_.currentSessionId());
+                messages.push_back(steerMsg);
+            }
         }
 
         LLMResponse resp;

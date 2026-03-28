@@ -5,6 +5,8 @@
 #include <map>
 #include <memory>
 #include <functional>
+#include <queue>
+#include <mutex>
 
 namespace opencodecpp {
 
@@ -53,6 +55,12 @@ public:
     int totalInputTokens() const { return totalInputTokens_; }
     int totalOutputTokens() const { return totalOutputTokens_; }
 
+    // AC-12, AC-14: Steer queue management
+    void addSteer(const std::string& steerText);
+
+    // Access tools map (for subagent)
+    const std::map<std::string, std::shared_ptr<Tool>>& getTools() const { return tools_; }
+
 private:
     std::shared_ptr<LLMProvider> provider_;
     SessionManager& session_;
@@ -60,6 +68,10 @@ private:
     std::vector<ToolDef> toolDefs_;
     int totalInputTokens_ = 0;
     int totalOutputTokens_ = 0;
+
+    // AC-12, AC-14: Steer queue
+    std::queue<std::string> steerQueue_;
+    std::mutex steerMutex_;
 };
 
 } // namespace opencodecpp

@@ -16,6 +16,7 @@ struct Config {
     int compact_threshold = 102400;
     std::string custom_instructions;
     std::string session_id;
+    std::string auth_mode; // AC-20: "codex" for ChatGPT login auth
 
     // CLI overrides
     std::string cli_model;

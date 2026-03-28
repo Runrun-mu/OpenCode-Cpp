@@ -53,7 +53,9 @@ private:
         {"/clear", "Clear chat display"},
         {"/help", "Show available commands"},
         {"/plan", "Analyze and plan without modifying code"},
-        {"/execute", "Execute the last plan"}
+        {"/execute", "Execute the last plan"},
+        {"/search", "Search the web for information"},
+        {"/fetch", "Fetch content from a URL"}
     };
     int suggestionIndex_ = 0;
     bool showSuggestions_ = false;

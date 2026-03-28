@@ -280,7 +280,7 @@ void test_enter_handler_checks_compact() {
     // Enter key handler should check for /compact (not just /skill)
     auto enterPos = content.find("Event::Return");
     ASSERT_TRUE(enterPos != std::string::npos);
-    auto enterBlock = content.substr(enterPos, 2000);
+    auto enterBlock = content.substr(enterPos, 3000);
     ASSERT_TRUE(enterBlock.find("compact") != std::string::npos ||
                 enterBlock.find("handleSlashCommand") != std::string::npos);
 }
@@ -289,7 +289,7 @@ void test_enter_handler_checks_status() {
     std::string content = readSourceFile("src/tui/tui.cpp");
     auto enterPos = content.find("Event::Return");
     ASSERT_TRUE(enterPos != std::string::npos);
-    auto enterBlock = content.substr(enterPos, 2000);
+    auto enterBlock = content.substr(enterPos, 3000);
     ASSERT_TRUE(enterBlock.find("status") != std::string::npos ||
                 enterBlock.find("handleSlashCommand") != std::string::npos);
 }

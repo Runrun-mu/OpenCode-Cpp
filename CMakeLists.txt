@@ -62,6 +62,10 @@ set(LIB_SOURCES
   src/tui/markdown.cpp
   src/skills/skill.cpp
   src/skills/skill_tool.cpp
+  src/tools/web_search.cpp
+  src/tools/web_fetch.cpp
+  src/tools/subagent.cpp
+  src/auth/codex_auth.cpp
 )
 
 # Static library for shared code
@@ -149,3 +153,7 @@ add_test(NAME test_scroll_container COMMAND test_scroll_container)
 add_executable(test_plan_mode tests/test_plan_mode.cpp)
 target_link_libraries(test_plan_mode PRIVATE opencodecpp_lib)
 add_test(NAME test_plan_mode COMMAND test_plan_mode)
+
+add_executable(test_sprint_f6_features tests/test_sprint_f6_features.cpp)
+target_link_libraries(test_sprint_f6_features PRIVATE opencodecpp_lib)
+add_test(NAME test_sprint_f6_features COMMAND test_sprint_f6_features)
