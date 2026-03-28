@@ -44,22 +44,56 @@ TUI::TUI(Config& config) : config_(config) {
     // Create LLM provider
     std::string provider = config_.getProvider();
 
-    // AC-24: When auth_mode is "codex", use Codex auth token
-    if (config_.auth_mode == "codex") {
-        std::string token = CodexAuth::loadCachedToken();
+    // When auth_mode is "codex", use Codex auth (Authorization Code + PKCE flow)
+    bool codexMode = (config_.auth_mode == "codex");
+    std::string codexAccountId;
+    if (codexMode) {
+        // Try cached token, check expiration, auto-refresh if needed
+        auto tokenData = CodexAuth::loadCachedTokenData();
+        std::string token;
+        if (tokenData.contains("access_token")) {
+            long long expiresAt = tokenData.value("expires_at", (long long)0);
+            if (!CodexAuth::shouldRefresh(expiresAt)) {
+                token = tokenData["access_token"].get<std::string>();
+                codexAccountId = tokenData.value("account_id", "");
+            } else if (tokenData.contains("refresh_token")) {
+                // AC-12: Auto-refresh expired token
+                token = CodexAuth::refreshToken(tokenData["refresh_token"].get<std::string>());
+                if (!token.empty()) {
+                    auto refreshedData = CodexAuth::loadCachedTokenData();
+                    codexAccountId = refreshedData.value("account_id", "");
+                } else {
+                    // AC-13: Refresh failure clears cache and re-authenticates
+                    remove(CodexAuth::tokenCachePath().c_str());
+                }
+            }
+        }
         if (token.empty()) {
             token = CodexAuth::authenticate();
+            if (!token.empty()) {
+                codexAccountId = CodexAuth::extractAccountId(token);
+                if (codexAccountId.empty()) {
+                    auto cachedData = CodexAuth::loadCachedTokenData();
+                    codexAccountId = cachedData.value("account_id", "");
+                }
+            }
         }
         if (!token.empty()) {
             config_.openai_api_key = token;
+            config_.openai_base_url = CodexAuth::CODEX_BASE_URL;
             provider = "openai";
         }
     }
 
     if (provider == "openai") {
-        provider_ = std::make_shared<OpenAIProvider>(
+        auto openaiProvider = std::make_shared<OpenAIProvider>(
             config_.openai_api_key, config_.getModel(), config_.openai_base_url
         );
+        // AC-8/AC-9: Enable codex mode with account ID for proper headers and endpoint
+        if (codexMode && !codexAccountId.empty()) {
+            openaiProvider->setCodexMode(true, codexAccountId);
+        }
+        provider_ = openaiProvider;
     } else {
         provider_ = std::make_shared<AnthropicProvider>(
             config_.anthropic_api_key, config_.getModel()

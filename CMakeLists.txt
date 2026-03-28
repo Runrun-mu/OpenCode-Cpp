@@ -83,6 +83,14 @@ target_link_libraries(opencodecpp_lib PUBLIC
   ${SQLite3_LIBRARIES}
 )
 
+# Link Apple Security/CommonCrypto framework on macOS (for SHA256 in codex_auth)
+if(APPLE)
+  find_library(SECURITY_FRAMEWORK Security)
+  if(SECURITY_FRAMEWORK)
+    target_link_libraries(opencodecpp_lib PUBLIC ${SECURITY_FRAMEWORK})
+  endif()
+endif()
+
 # Main executable
 add_executable(opencode src/main.cpp)
 target_link_libraries(opencode PRIVATE opencodecpp_lib)
@@ -157,3 +165,7 @@ add_test(NAME test_plan_mode COMMAND test_plan_mode)
 add_executable(test_sprint_f6_features tests/test_sprint_f6_features.cpp)
 target_link_libraries(test_sprint_f6_features PRIVATE opencodecpp_lib)
 add_test(NAME test_sprint_f6_features COMMAND test_sprint_f6_features)
+
+add_executable(test_codex_auth_flow tests/test_codex_auth_flow.cpp)
+target_link_libraries(test_codex_auth_flow PRIVATE opencodecpp_lib)
+add_test(NAME test_codex_auth_flow COMMAND test_codex_auth_flow)

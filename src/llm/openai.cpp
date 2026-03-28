@@ -6,11 +6,78 @@ namespace opencodecpp {
 OpenAIProvider::OpenAIProvider(const std::string& apiKey, const std::string& model, const std::string& baseUrl)
     : apiKey_(apiKey), model_(model), baseUrl_(baseUrl) {}
 
+void OpenAIProvider::setCodexMode(bool enabled, const std::string& accountId) {
+    codexMode_ = enabled;
+    accountId_ = accountId;
+}
+
+std::string OpenAIProvider::getRequestUrl() const {
+    if (codexMode_) {
+        return baseUrl_ + "/codex/responses";
+    }
+    return baseUrl_ + "/v1/chat/completions";
+}
+
 std::map<std::string, std::string> OpenAIProvider::getHeaders() const {
-    return {
+    std::map<std::string, std::string> headers = {
         {"Content-Type", "application/json"},
         {"Authorization", "Bearer " + apiKey_}
     };
+
+    if (codexMode_) {
+        headers["chatgpt-account-id"] = accountId_;
+        headers["OpenAI-Beta"] = "responses=experimental";
+        headers["originator"] = "codex_cli_rs";
+        headers["accept"] = "text/event-stream";
+    }
+
+    return headers;
+}
+
+nlohmann::json OpenAIProvider::buildCodexRequest(
+    const std::vector<Message>& messages,
+    const std::vector<ToolDef>& tools,
+    const std::string& system_prompt,
+    bool stream
+) const {
+    nlohmann::json req;
+    req["model"] = model_;
+    req["store"] = false;
+    req["stream"] = stream;
+
+    if (!system_prompt.empty()) {
+        req["instructions"] = system_prompt;
+    }
+
+    // Convert messages to Codex Responses API input format
+    nlohmann::json input = nlohmann::json::array();
+    for (auto& msg : messages) {
+        nlohmann::json item;
+        item["role"] = msg.role;
+        if (msg.content.is_string()) {
+            item["content"] = msg.content.get<std::string>();
+        } else {
+            item["content"] = msg.content.dump();
+        }
+        input.push_back(item);
+    }
+    req["input"] = input;
+
+    // Add tools if present
+    if (!tools.empty()) {
+        nlohmann::json toolsArr = nlohmann::json::array();
+        for (auto& t : tools) {
+            nlohmann::json td;
+            td["type"] = "function";
+            td["name"] = t.name;
+            td["description"] = t.description;
+            td["parameters"] = t.schema;
+            toolsArr.push_back(td);
+        }
+        req["tools"] = toolsArr;
+    }
+
+    return req;
 }
 
 nlohmann::json OpenAIProvider::buildRequest(
@@ -19,6 +86,11 @@ nlohmann::json OpenAIProvider::buildRequest(
     const std::string& system_prompt,
     bool stream
 ) const {
+    // Codex mode uses Responses API format
+    if (codexMode_) {
+        return buildCodexRequest(messages, tools, system_prompt, stream);
+    }
+
     nlohmann::json req;
     req["model"] = model_;
     if (stream) {
@@ -133,7 +205,7 @@ LLMResponse OpenAIProvider::sendMessage(
 ) {
     auto req = buildRequest(messages, tools, system_prompt, false);
     auto headers = getHeaders();
-    std::string url = baseUrl_ + "/v1/chat/completions";
+    std::string url = getRequestUrl();
 
     auto httpResp = http_.post(url, req.dump(), headers);
 
@@ -163,7 +235,7 @@ LLMResponse OpenAIProvider::streamMessage(
 ) {
     auto req = buildRequest(messages, tools, system_prompt, true);
     auto headers = getHeaders();
-    std::string url = baseUrl_ + "/v1/chat/completions";
+    std::string url = getRequestUrl();
 
     LLMResponse result;
 
@@ -173,6 +245,48 @@ LLMResponse OpenAIProvider::streamMessage(
 
     SSEParser parser(
         [&](const std::string& event, const nlohmann::json& data) {
+            // Handle Codex Responses API SSE events (AC-14)
+            if (codexMode_) {
+                std::string type = data.value("type", "");
+                if (type == "response.output_text.delta") {
+                    std::string text = data.value("delta", "");
+                    if (!text.empty()) {
+                        result.content += text;
+                        if (onToken) onToken(text);
+                    }
+                } else if (type == "response.done") {
+                    result.stop_reason = "stop";
+                    // Extract usage if available
+                    if (data.contains("response") && data["response"].contains("usage")) {
+                        auto& usage = data["response"]["usage"];
+                        result.input_tokens = usage.value("input_tokens", 0);
+                        result.output_tokens = usage.value("output_tokens", 0);
+                    }
+                } else if (type == "response.function_call_arguments.delta") {
+                    // Handle function call streaming for codex mode
+                    int idx = data.value("output_index", 0);
+                    std::string argDelta = data.value("delta", "");
+                    argStrings[idx] += argDelta;
+                    if (data.contains("call_id")) {
+                        partialToolCalls[idx].id = data["call_id"].get<std::string>();
+                    }
+                    if (data.contains("name")) {
+                        partialToolCalls[idx].name = data["name"].get<std::string>();
+                    }
+                    try {
+                        partialToolCalls[idx].arguments = nlohmann::json::parse(argStrings[idx]);
+                    } catch (...) {}
+                } else if (type == "response.function_call_arguments.done") {
+                    int idx = data.value("output_index", 0);
+                    if (partialToolCalls.count(idx)) {
+                        result.tool_calls.push_back(partialToolCalls[idx]);
+                        if (onToolCall) onToolCall(partialToolCalls[idx]);
+                    }
+                }
+                return;
+            }
+
+            // Standard Chat Completions SSE handling
             if (!data.contains("choices") || data["choices"].empty()) {
                 // Check for usage in stream
                 if (data.contains("usage")) {
@@ -225,10 +339,12 @@ LLMResponse OpenAIProvider::streamMessage(
             }
         },
         [&]() {
-            // Stream done - finalize tool calls
-            for (auto& [idx, tc] : partialToolCalls) {
-                result.tool_calls.push_back(tc);
-                if (onToolCall) onToolCall(tc);
+            // Stream done - finalize tool calls (for non-codex mode)
+            if (!codexMode_) {
+                for (auto& [idx, tc] : partialToolCalls) {
+                    result.tool_calls.push_back(tc);
+                    if (onToolCall) onToolCall(tc);
+                }
             }
         }
     );

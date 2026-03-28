@@ -6,39 +6,73 @@ namespace opencodecpp {
 
 class CodexAuth {
 public:
-    // AC-21: Device code flow endpoint
-    static constexpr const char* DEVICE_CODE_URL = "https://auth0.openai.com/oauth/device/code";
-    // AC-23: Token endpoint
-    static constexpr const char* TOKEN_URL = "https://auth0.openai.com/oauth/token";
-    // Client ID for the Codex CLI
-    static constexpr const char* CLIENT_ID = "DRivsnm2Mu42T3KOpqdtwB3NYviHYzwD";
+    // Updated OAuth constants (Authorization Code + PKCE flow)
+    static constexpr const char* CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
+    static constexpr const char* AUTHORIZE_URL = "https://auth.openai.com/oauth/authorize";
+    static constexpr const char* TOKEN_URL = "https://auth.openai.com/oauth/token";
+    static constexpr const char* REDIRECT_URI = "http://localhost:1455/auth/callback";
+    static constexpr const char* SCOPE = "openid profile email offline_access";
+    static constexpr const char* CODEX_BASE_URL = "https://chatgpt.com/backend-api";
 
-    // AC-23: Token cache path (~/.opencode/codex_token.json)
+    // PKCE support
+    struct PKCEPair {
+        std::string verifier;
+        std::string challenge;
+    };
+
+    // Generate PKCE code_verifier (32 random bytes, base64url) and
+    // code_challenge (SHA256 of verifier, base64url)
+    static PKCEPair generatePKCE();
+
+    // Generate random state parameter (16 random bytes, hex-encoded)
+    static std::string generateState();
+
+    // Build the full authorization URL for browser-based OAuth
+    static std::string buildAuthorizationUrl(const std::string& codeChallenge, const std::string& state);
+
+    // Extract chatgpt_account_id from JWT access token
+    static std::string extractAccountId(const std::string& jwt);
+
+    // Token cache path (~/.opencode/codex_token.json)
     static std::string tokenCachePath();
 
-    // AC-24: Load cached token
+    // Load cached access token string (empty if not cached or expired)
     static std::string loadCachedToken();
 
-    // Save token to cache
-    static void saveCachedToken(const std::string& accessToken, const std::string& refreshToken = "");
+    // Load full cached token data as JSON
+    static nlohmann::json loadCachedTokenData();
 
-    // AC-21, AC-22, AC-23: Run the full device code auth flow
+    // Save token to cache with all fields
+    static void saveCachedToken(const std::string& accessToken,
+                                const std::string& refreshToken = "",
+                                long long expiresAt = 0,
+                                const std::string& accountId = "");
+
+    // Check if token should be refreshed
+    static bool shouldRefresh(long long expiresAt);
+
+    // Refresh an expired token using refresh_token
+    static std::string refreshToken(const std::string& refreshToken);
+
+    // Start local HTTP server on 127.0.0.1:1455, wait for OAuth callback
+    // Returns the authorization code, or empty on timeout/error
+    static std::string waitForCallback(const std::string& expectedState, int timeoutSeconds = 120);
+
+    // Run the full Authorization Code + PKCE auth flow
     // Returns the access token, or empty string on failure
     static std::string authenticate();
 
-    struct DeviceCodeResponse {
-        std::string device_code;
-        std::string user_code;
-        std::string verification_uri;
-        int interval = 5;
-        int expires_in = 900;
-    };
+    // Token exchange: exchange authorization code for tokens
+    static nlohmann::json exchangeCode(const std::string& code, const std::string& codeVerifier);
 
-    // AC-21: Get device code
-    static DeviceCodeResponse getDeviceCode();
+private:
+    // Base64url encode/decode helpers
+    static std::string base64urlEncode(const unsigned char* data, size_t len);
+    static std::string base64urlEncode(const std::string& data);
+    static std::string base64urlDecode(const std::string& input);
 
-    // AC-23: Poll for token
-    static std::string pollForToken(const std::string& deviceCode, int interval, int expiresIn);
+    // URL-encode a string
+    static std::string urlEncode(const std::string& str);
 };
 
 } // namespace opencodecpp
