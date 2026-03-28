@@ -20,7 +20,7 @@ int main(int argc, char* argv[]) {
                   << opencodecpp::Config::configFilePath() << "\n";
         return 1;
     }
-    if (provider == "openai" && config.openai_api_key.empty()) {
+    if (provider == "openai" && config.openai_api_key.empty() && config.auth_mode != "codex") {
         std::cerr << "Error: No API key found for OpenAI provider.\n"
                   << "Set the OPENAI_API_KEY environment variable or add it to "
                   << opencodecpp::Config::configFilePath() << "\n";
