@@ -136,4 +136,41 @@ LLMResponse AgentLoop::run(
     return finalResponse;
 }
 
+std::string AgentLoop::compact(const std::string& systemPrompt) {
+    auto history = session_.getHistory();
+    if (history.empty()) return "";
+
+    // Build conversation text
+    std::string convText;
+    for (auto& msg : history) {
+        convText += msg.role + ": ";
+        if (msg.content.is_string()) convText += msg.content.get<std::string>();
+        else convText += msg.content.dump();
+        convText += "\n";
+    }
+
+    std::string compactPrompt =
+        "Summarize the following conversation. Include: current progress, "
+        "key decisions, remaining tasks, critical file paths. "
+        "Keep under 2000 tokens. Output only the summary.\n\n" + convText;
+
+    Message compactMsg;
+    compactMsg.role = "user";
+    compactMsg.content = compactPrompt;
+
+    auto resp = provider_->sendMessage({compactMsg}, {}, systemPrompt);
+
+    if (!resp.error.empty()) return "Error: " + resp.error;
+
+    Message summaryMsg;
+    summaryMsg.role = "user";
+    summaryMsg.content = "[Conversation Summary]\n" + resp.content;
+    session_.clearAndReplace(summaryMsg);
+
+    totalInputTokens_ += resp.input_tokens;
+    totalOutputTokens_ += resp.output_tokens;
+
+    return resp.content;
+}
+
 } // namespace opencodecpp

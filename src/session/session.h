@@ -18,6 +18,8 @@ public:
     bool loadSession(const std::string& sessionId);
 
     void addMessage(const Message& msg, const std::string& sessionId, int tokenCount = 0);
+    void clearAndReplace(const Message& summary);
+    int messageCount() const { return static_cast<int>(history_.size()); }
     std::vector<Message> getHistory() const { return history_; }
 
     std::string currentSessionId() const { return currentSessionId_; }

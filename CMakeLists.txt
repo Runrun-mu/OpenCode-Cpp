@@ -117,3 +117,7 @@ add_test(NAME test_markdown COMMAND test_markdown)
 add_executable(test_skills tests/test_skills.cpp)
 target_link_libraries(test_skills PRIVATE opencodecpp_lib)
 add_test(NAME test_skills COMMAND test_skills)
+
+add_executable(test_compact_status tests/test_compact_status.cpp)
+target_link_libraries(test_compact_status PRIVATE opencodecpp_lib)
+add_test(NAME test_compact_status COMMAND test_compact_status)

@@ -60,4 +60,9 @@ void SessionManager::addMessage(const Message& msg, const std::string& sessionId
     db_.saveMessage(rec);
 }
 
+void SessionManager::clearAndReplace(const Message& summary) {
+    history_.clear();
+    history_.push_back(summary);
+}
+
 } // namespace opencodecpp

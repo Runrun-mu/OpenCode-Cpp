@@ -28,6 +28,9 @@ public:
         int maxRounds = 20
     );
 
+    // Compact/summarize the conversation history
+    std::string compact(const std::string& systemPrompt);
+
     int totalInputTokens() const { return totalInputTokens_; }
     int totalOutputTokens() const { return totalOutputTokens_; }
 

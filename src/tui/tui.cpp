@@ -119,6 +119,34 @@ void TUI::handleInput(const std::string& input) {
 }
 
 bool TUI::handleSlashCommand(const std::string& input, std::mutex& chatMutex) {
+    // Handle /status command
+    if (input.substr(0, 7) == "/status") {
+        ChatMessage sysMsg;
+        sysMsg.role = "tool";
+        sysMsg.toolName = "status";
+        sysMsg.toolStatus = "done";
+        sysMsg.content = "Model: " + config_.getModel() + "\n"
+            + "Session: " + session_.currentSessionId() + "\n"
+            + "Messages: " + std::to_string(session_.getHistory().size()) + "\n"
+            + "Tokens (in/out): " + std::to_string(totalInputTokens_) + "/" + std::to_string(totalOutputTokens_) + "\n"
+            + "Cost: $" + std::to_string(calculateCost()) + "\n"
+            + "Compact threshold: 50 messages";
+        chatMessages_.push_back(sysMsg);
+        return true;
+    }
+
+    // Handle /compact command
+    if (input.substr(0, 8) == "/compact") {
+        ChatMessage startMsg;
+        startMsg.role = "tool";
+        startMsg.toolName = "compact";
+        startMsg.toolStatus = "running";
+        startMsg.content = "Compacting conversation...";
+        chatMessages_.push_back(startMsg);
+        return true; // Will be handled asynchronously
+    }
+
+    // Handle /skill command
     if (input.substr(0, 6) != "/skill") return false;
 
     std::string rest = input.size() > 6 ? input.substr(7) : "";
@@ -163,11 +191,7 @@ void TUI::run() {
 
     std::string inputText;
     std::mutex chatMutex;
-    std::atomic<int> scrollOffset{0};
     std::atomic<bool> scrollToBottom{true};
-    std::atomic<int> viewportHeight{20}; // dynamic, updated each render frame
-    constexpr int MOUSE_SCROLL_LINES = 3;
-    constexpr int UI_CHROME_HEIGHT = 5; // input border(3) + status bar(1) + separator(1)
 
     // Input component
     auto inputOption = InputOption();
@@ -191,31 +215,11 @@ void TUI::run() {
             );
         }
 
-        // AC-53: Compute dynamic viewport height from terminal size
-        int termHeight = ftxui::Terminal::Size().dimy;
-        int vpHeight = std::max(5, termHeight - UI_CHROME_HEIGHT);
-        viewportHeight.store(vpHeight);
-
-        // AC-51/52: Element slicing with clamped scrollOffset
-        int totalLines = static_cast<int>(chatElements.size());
-        int maxScroll = std::max(0, totalLines - vpHeight);
-
-        // Resolve scrollToBottom
-        if (scrollToBottom.load()) {
-            scrollOffset.store(maxScroll);
+        // F-1: FTXUI native scrolling - focus last element for auto-scroll
+        if (scrollToBottom.load() && !chatElements.empty()) {
+            chatElements.back() = chatElements.back() | focus;
         }
-
-        // AC-52: Clamp scrollOffset to [0, maxScroll] every frame
-        int currentOffset = std::clamp(scrollOffset.load(), 0, maxScroll);
-        scrollOffset.store(currentOffset);
-
-        // AC-51: Slice visible elements only
-        int endIdx = std::min(currentOffset + vpHeight, totalLines);
-        std::vector<Element> visibleElements(chatElements.begin() + currentOffset,
-                                              chatElements.begin() + endIdx);
-
-        // AC-50: Manual element slicing replaces old proportional scroll approach
-        auto chatBox = vbox(visibleElements) | flex;
+        auto chatBox = vbox(chatElements) | vscroll_indicator | yframe | flex;
 
         // Input area
         auto inputArea = hbox({
@@ -267,15 +271,47 @@ void TUI::run() {
                 {
                     std::lock_guard<std::mutex> lock(chatMutex);
 
-                    // Check for /skill command
-                    if (msg.substr(0, 6) == "/skill") {
-                        handleSlashCommand(msg, chatMutex);
+                    // Check for slash commands (/skill, /status, /compact)
+                    if (msg[0] == '/' && handleSlashCommand(msg, chatMutex)) {
+                        // /compact needs async handling
+                        if (msg.substr(0, 8) == "/compact") {
+                            // Will run compact in background thread below
+                        } else {
+                            scrollToBottom.store(true);
+                            return true;
+                        }
+                    }
+
+                    // If /compact, run in background
+                    if (msg.substr(0, 8) == "/compact") {
                         scrollToBottom.store(true);
+                        std::thread([this, &chatMutex, &screen, &scrollToBottom]() {
+                            std::string systemPrompt =
+                                "You are an AI coding assistant.";
+                            auto summary = agentLoop_->compact(systemPrompt);
+                            {
+                                std::lock_guard<std::mutex> lock(chatMutex);
+                                totalInputTokens_ = agentLoop_->totalInputTokens();
+                                totalOutputTokens_ = agentLoop_->totalOutputTokens();
+
+                                ChatMessage doneMsg;
+                                doneMsg.role = "tool";
+                                doneMsg.toolName = "compact";
+                                doneMsg.toolStatus = "done";
+                                if (summary.empty() || summary.substr(0, 5) == "Error") {
+                                    doneMsg.content = "Compact failed: " + summary;
+                                } else {
+                                    doneMsg.content = "Conversation compacted successfully. Summary:\n" + summary;
+                                }
+                                chatMessages_.push_back(doneMsg);
+                            }
+                            screen.Post(Event::Custom);
+                        }).detach();
                         return true;
                     }
 
                     handleInput(msg);
-                    scrollToBottom.store(true); // AC-12: Auto-scroll on user message
+                    scrollToBottom.store(true); // Auto-scroll on user message
                 }
 
                 // Run agent in background thread
@@ -335,6 +371,21 @@ void TUI::run() {
                             errMsg.content = "Error: " + resp.error;
                             chatMessages_.push_back(errMsg);
                         }
+
+                        // Auto-compact when message count exceeds 50
+                        if (session_.getHistory().size() > 50) {
+                            auto summary = agentLoop_->compact(systemPrompt);
+                            if (!summary.empty() && summary.substr(0, 5) != "Error") {
+                                ChatMessage compactMsg;
+                                compactMsg.role = "tool";
+                                compactMsg.toolName = "compact";
+                                compactMsg.toolStatus = "done";
+                                compactMsg.content = "Auto-compact triggered (>50 messages). Summary:\n" + summary;
+                                chatMessages_.push_back(compactMsg);
+                                totalInputTokens_ = agentLoop_->totalInputTokens();
+                                totalOutputTokens_ = agentLoop_->totalOutputTokens();
+                            }
+                        }
                     }
                     screen.Post(Event::Custom);
                 }).detach();
@@ -342,51 +393,45 @@ void TUI::run() {
             return true;
         }
 
-        // Page Up - scroll up by one page (AC-55)
+        // Page Up - scroll up (AC-3/AC-5: FTXUI handles natively via yframe)
         if (event == Event::PageUp) {
-            scrollOffset.store(scrollOffset.load() - viewportHeight.load());
             scrollToBottom.store(false);
-            return true;
+            return false; // Let FTXUI handle the actual scrolling
         }
 
-        // Page Down - scroll down by one page (AC-55)
+        // Page Down - scroll down (AC-5)
         if (event == Event::PageDown) {
-            scrollOffset.store(scrollOffset.load() + viewportHeight.load());
-            return true;
+            return false; // Let FTXUI handle the actual scrolling
         }
 
-        // Home - jump to top (AC-6)
+        // Home - jump to top (AC-3)
         if (event == Event::Home) {
-            scrollOffset.store(0);
             scrollToBottom.store(false);
-            return true;
+            return false; // Let FTXUI handle
         }
 
-        // End - jump to bottom (AC-7)
+        // End - jump to bottom (AC-4)
         if (event == Event::End) {
             scrollToBottom.store(true);
             return true;
         }
 
-        // Mouse wheel scroll (AC-8, AC-9)
+        // Mouse wheel scroll (AC-3)
         if (event.is_mouse()) {
             if (event.mouse().button == Mouse::WheelUp) {
-                scrollOffset.store(scrollOffset.load() - MOUSE_SCROLL_LINES);
                 scrollToBottom.store(false);
-                return true;
+                return false; // Let FTXUI handle
             }
             if (event.mouse().button == Mouse::WheelDown) {
-                scrollOffset.store(scrollOffset.load() + MOUSE_SCROLL_LINES);
-                return true;
+                return false; // Let FTXUI handle
             }
         }
 
         // Up arrow - scroll when input empty, otherwise previous input
         if (event == Event::ArrowUp) {
             if (inputText.empty() || isGenerating_) {
-                scrollOffset.store(scrollOffset.load() - 1);
                 scrollToBottom.store(false);
-                return true;
+                return false; // Let FTXUI handle
             }
             std::string prev = inputHandler_.getPreviousInput();
             if (!prev.empty()) inputText = prev;
@@ -396,8 +441,7 @@ void TUI::run() {
         // Down arrow - scroll when input empty, otherwise next input
         if (event == Event::ArrowDown) {
             if (inputText.empty() || isGenerating_) {
-                scrollOffset.store(scrollOffset.load() + 1);
-                return true;
+                return false; // Let FTXUI handle
             }
             inputText = inputHandler_.getNextInput();
             return true;

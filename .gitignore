@@ -11,3 +11,5 @@ mbti/
 tests/test_openai_live.cpp
 snake-game/
 snake.html
+agent-admin/
+node_modules/
