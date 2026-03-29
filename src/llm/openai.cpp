@@ -50,16 +50,53 @@ nlohmann::json OpenAIProvider::buildCodexRequest(
     }
 
     // Convert messages to Codex Responses API input format
+    // Responses API only accepts: user, assistant, system, developer
+    // Tool results must use type: "function_call_output"
+    // Assistant tool calls must use type: "function_call"
     nlohmann::json input = nlohmann::json::array();
     for (auto& msg : messages) {
-        nlohmann::json item;
-        item["role"] = msg.role;
-        if (msg.content.is_string()) {
-            item["content"] = msg.content.get<std::string>();
+        if (msg.role == "tool") {
+            // Tool result → function_call_output
+            nlohmann::json item;
+            item["type"] = "function_call_output";
+            item["call_id"] = msg.tool_call_id.empty() ? msg.tool_use_id : msg.tool_call_id;
+            if (msg.content.is_string()) {
+                item["output"] = msg.content.get<std::string>();
+            } else {
+                item["output"] = msg.content.dump();
+            }
+            input.push_back(item);
+        } else if (msg.role == "assistant" && !msg.tool_calls.is_null() && !msg.tool_calls.empty()) {
+            // Assistant message with tool calls
+            // First add text content if any
+            if (msg.content.is_string() && !msg.content.get<std::string>().empty()) {
+                nlohmann::json textItem;
+                textItem["role"] = "assistant";
+                textItem["content"] = msg.content.get<std::string>();
+                input.push_back(textItem);
+            }
+            // Then add each tool call as function_call type
+            for (auto& tc : msg.tool_calls) {
+                nlohmann::json callItem;
+                callItem["type"] = "function_call";
+                callItem["call_id"] = tc.value("id", "");
+                if (tc.contains("function")) {
+                    callItem["name"] = tc["function"].value("name", "");
+                    callItem["arguments"] = tc["function"].value("arguments", "{}");
+                }
+                input.push_back(callItem);
+            }
         } else {
-            item["content"] = msg.content.dump();
+            // Regular user/assistant/system message
+            nlohmann::json item;
+            item["role"] = msg.role;
+            if (msg.content.is_string()) {
+                item["content"] = msg.content.get<std::string>();
+            } else {
+                item["content"] = msg.content.dump();
+            }
+            input.push_back(item);
         }
-        input.push_back(item);
     }
     req["input"] = input;
 

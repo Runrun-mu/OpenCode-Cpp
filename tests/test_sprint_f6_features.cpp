@@ -265,14 +265,14 @@ void test_codex_auth_default() {
     ASSERT_TRUE(cfg.auth_mode.empty());
 }
 
-// AC-21: Device code flow URL
+// AC-21: Authorization URL (updated from device code to PKCE flow)
 void test_codex_auth_device_code_url() {
-    ASSERT_EQ(CodexAuth::DEVICE_CODE_URL, std::string("https://auth0.openai.com/oauth/device/code"));
+    ASSERT_EQ(CodexAuth::AUTHORIZE_URL, std::string("https://auth.openai.com/oauth/authorize"));
 }
 
-// AC-23: Token endpoint URL
+// AC-23: Token endpoint URL (updated to auth.openai.com)
 void test_codex_auth_token_url() {
-    ASSERT_EQ(CodexAuth::TOKEN_URL, std::string("https://auth0.openai.com/oauth/token"));
+    ASSERT_EQ(CodexAuth::TOKEN_URL, std::string("https://auth.openai.com/oauth/token"));
 }
 
 // AC-23: Token cache path

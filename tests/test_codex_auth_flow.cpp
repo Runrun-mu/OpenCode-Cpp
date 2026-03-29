@@ -258,6 +258,8 @@ void test_save_cached_token_fields() {
     ASSERT_EQ(tokenData["refresh_token"].get<std::string>(), std::string("refresh456"));
     ASSERT_EQ(tokenData["account_id"].get<std::string>(), std::string("acct_789"));
     ASSERT_TRUE(tokenData.contains("expires_at"));
+    // Cleanup: remove the test token so it doesn't pollute real usage
+    remove(CodexAuth::tokenCachePath().c_str());
 }
 
 // AC-12: shouldRefresh returns true for expired tokens

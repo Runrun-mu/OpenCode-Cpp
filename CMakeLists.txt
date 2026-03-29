@@ -169,3 +169,7 @@ add_test(NAME test_sprint_f6_features COMMAND test_sprint_f6_features)
 add_executable(test_codex_auth_flow tests/test_codex_auth_flow.cpp)
 target_link_libraries(test_codex_auth_flow PRIVATE opencodecpp_lib)
 add_test(NAME test_codex_auth_flow COMMAND test_codex_auth_flow)
+
+add_executable(test_ac16_codex_auth_cli tests/test_ac16_codex_auth_cli.cpp)
+target_link_libraries(test_ac16_codex_auth_cli PRIVATE opencodecpp_lib)
+add_test(NAME test_ac16_codex_auth_cli COMMAND test_ac16_codex_auth_cli)
