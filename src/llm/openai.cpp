@@ -1,5 +1,6 @@
 #include "openai.h"
 #include "streaming.h"
+#include <set>
 
 namespace opencodecpp {
 
@@ -50,19 +51,26 @@ nlohmann::json OpenAIProvider::buildCodexRequest(
     }
 
     // Convert messages to Codex Responses API input format
-    // Responses API only accepts: user, assistant, system, developer
+    // Responses API only accepts: user, assistant, developer
     // Tool results must use type: "function_call_output"
     // Assistant tool calls must use type: "function_call"
+    // System messages are NOT valid in input (use "instructions" field instead)
     nlohmann::json input = nlohmann::json::array();
     int callCounter = 0; // fallback ID counter
     for (auto& msg : messages) {
+        // AC-9: Skip system messages from input array
+        if (msg.role == "system") {
+            continue;
+        }
+
         if (msg.role == "tool") {
             // Tool result → function_call_output
             nlohmann::json item;
             item["type"] = "function_call_output";
             std::string cid = msg.tool_call_id.empty() ? msg.tool_use_id : msg.tool_call_id;
             if (cid.empty()) {
-                cid = "call_" + std::to_string(callCounter++);
+                // AC-5: Generate fallback call_id for function_call_output
+                cid = "call_gen_" + std::to_string(callCounter++);
             }
             item["call_id"] = cid;
             if (msg.content.is_string()) {
@@ -82,21 +90,39 @@ nlohmann::json OpenAIProvider::buildCodexRequest(
             }
             // Then add each tool call as function_call type
             for (auto& tc : msg.tool_calls) {
-                nlohmann::json callItem;
-                callItem["type"] = "function_call";
+                // AC-3: Skip malformed tool_calls without "function" object
+                if (!tc.contains("function")) {
+                    continue;
+                }
+
+                std::string name = tc["function"].value("name", "");
+                std::string arguments = tc["function"].value("arguments", "{}");
+
+                // AC-1: Skip tool calls with empty function name
+                if (name.empty()) {
+                    continue;
+                }
+
+                // AC-2: Ensure arguments is never empty
+                if (arguments.empty()) {
+                    arguments = "{}";
+                }
+
+                // AC-4: Generate fallback call_id if empty
                 std::string cid = tc.value("id", "");
                 if (cid.empty()) {
-                    cid = "call_" + std::to_string(callCounter++);
+                    cid = "call_gen_" + std::to_string(callCounter++);
                 }
+
+                nlohmann::json callItem;
+                callItem["type"] = "function_call";
                 callItem["call_id"] = cid;
-                if (tc.contains("function")) {
-                    callItem["name"] = tc["function"].value("name", "");
-                    callItem["arguments"] = tc["function"].value("arguments", "{}");
-                }
+                callItem["name"] = name;
+                callItem["arguments"] = arguments;
                 input.push_back(callItem);
             }
         } else {
-            // Regular user/assistant/system message
+            // Regular user/assistant message
             nlohmann::json item;
             item["role"] = msg.role;
             if (msg.content.is_string()) {
@@ -107,7 +133,34 @@ nlohmann::json OpenAIProvider::buildCodexRequest(
             input.push_back(item);
         }
     }
-    req["input"] = input;
+
+    // AC-7, AC-8: Orphan detection pass
+    // Collect all call_ids from function_call items
+    std::set<std::string> functionCallIds;
+    for (auto& item : input) {
+        if (item.value("type", "") == "function_call") {
+            functionCallIds.insert(item.value("call_id", ""));
+        }
+    }
+
+    // Check each function_call_output for a matching function_call
+    nlohmann::json filteredInput = nlohmann::json::array();
+    for (auto& item : input) {
+        if (item.value("type", "") == "function_call_output") {
+            std::string cid = item.value("call_id", "");
+            if (functionCallIds.find(cid) == functionCallIds.end()) {
+                // Orphaned: convert to assistant message preserving content
+                nlohmann::json converted;
+                converted["role"] = "assistant";
+                std::string output = item.value("output", "");
+                converted["content"] = "[Previous tool result; call_id=" + cid + "]: " + output;
+                filteredInput.push_back(converted);
+                continue;
+            }
+        }
+        filteredInput.push_back(item);
+    }
+    req["input"] = filteredInput;
 
     // Add tools if present
     if (!tools.empty()) {
@@ -308,26 +361,49 @@ LLMResponse OpenAIProvider::streamMessage(
                         result.input_tokens = usage.value("input_tokens", 0);
                         result.output_tokens = usage.value("output_tokens", 0);
                     }
+                } else if (type == "response.output_item.added") {
+                    // AC-11: Handle output_item.added to populate tool call metadata
+                    if (data.contains("item") && data["item"].value("type", "") == "function_call") {
+                        int idx = data.value("output_index", 0);
+                        auto& item = data["item"];
+                        partialToolCalls[idx].id = item.value("call_id", "");
+                        partialToolCalls[idx].name = item.value("name", "");
+                    }
                 } else if (type == "response.function_call_arguments.delta") {
                     // Handle function call streaming for codex mode
                     int idx = data.value("output_index", 0);
                     std::string argDelta = data.value("delta", "");
                     argStrings[idx] += argDelta;
-                    if (data.contains("call_id")) {
+                    // Only update name/id from delta if not already set by output_item.added
+                    if (data.contains("call_id") && partialToolCalls[idx].id.empty()) {
                         partialToolCalls[idx].id = data["call_id"].get<std::string>();
                     }
-                    if (data.contains("name")) {
+                    if (data.contains("name") && partialToolCalls[idx].name.empty()) {
                         partialToolCalls[idx].name = data["name"].get<std::string>();
                     }
                     try {
                         partialToolCalls[idx].arguments = nlohmann::json::parse(argStrings[idx]);
                     } catch (...) {}
                 } else if (type == "response.function_call_arguments.done") {
+                    // AC-12: Finalize tool call with complete arguments
                     int idx = data.value("output_index", 0);
                     if (partialToolCalls.count(idx)) {
+                        // Parse the final arguments string
+                        try {
+                            partialToolCalls[idx].arguments = nlohmann::json::parse(argStrings[idx]);
+                        } catch (...) {
+                            partialToolCalls[idx].arguments = nlohmann::json::object();
+                        }
                         result.tool_calls.push_back(partialToolCalls[idx]);
                         if (onToolCall) onToolCall(partialToolCalls[idx]);
                     }
+                } else if (type == "response.error") {
+                    // AC-13: Handle error events
+                    std::string errMsg = "Codex API error";
+                    if (data.contains("error")) {
+                        errMsg = data["error"].value("message", data["error"].dump());
+                    }
+                    result.error = errMsg;
                 }
                 return;
             }

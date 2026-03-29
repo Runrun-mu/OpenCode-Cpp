@@ -173,3 +173,7 @@ add_test(NAME test_codex_auth_flow COMMAND test_codex_auth_flow)
 add_executable(test_ac16_codex_auth_cli tests/test_ac16_codex_auth_cli.cpp)
 target_link_libraries(test_ac16_codex_auth_cli PRIVATE opencodecpp_lib)
 add_test(NAME test_ac16_codex_auth_cli COMMAND test_ac16_codex_auth_cli)
+
+add_executable(test_codex_responses_api tests/test_codex_responses_api.cpp)
+target_link_libraries(test_codex_responses_api PRIVATE opencodecpp_lib)
+add_test(NAME test_codex_responses_api COMMAND test_codex_responses_api)
