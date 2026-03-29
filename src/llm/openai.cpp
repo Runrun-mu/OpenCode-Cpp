@@ -54,12 +54,17 @@ nlohmann::json OpenAIProvider::buildCodexRequest(
     // Tool results must use type: "function_call_output"
     // Assistant tool calls must use type: "function_call"
     nlohmann::json input = nlohmann::json::array();
+    int callCounter = 0; // fallback ID counter
     for (auto& msg : messages) {
         if (msg.role == "tool") {
             // Tool result → function_call_output
             nlohmann::json item;
             item["type"] = "function_call_output";
-            item["call_id"] = msg.tool_call_id.empty() ? msg.tool_use_id : msg.tool_call_id;
+            std::string cid = msg.tool_call_id.empty() ? msg.tool_use_id : msg.tool_call_id;
+            if (cid.empty()) {
+                cid = "call_" + std::to_string(callCounter++);
+            }
+            item["call_id"] = cid;
             if (msg.content.is_string()) {
                 item["output"] = msg.content.get<std::string>();
             } else {
@@ -79,7 +84,11 @@ nlohmann::json OpenAIProvider::buildCodexRequest(
             for (auto& tc : msg.tool_calls) {
                 nlohmann::json callItem;
                 callItem["type"] = "function_call";
-                callItem["call_id"] = tc.value("id", "");
+                std::string cid = tc.value("id", "");
+                if (cid.empty()) {
+                    cid = "call_" + std::to_string(callCounter++);
+                }
+                callItem["call_id"] = cid;
                 if (tc.contains("function")) {
                     callItem["name"] = tc["function"].value("name", "");
                     callItem["arguments"] = tc["function"].value("arguments", "{}");
