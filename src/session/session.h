@@ -14,7 +14,9 @@ public:
     bool initialize(const std::string& dbPath);
 
     std::string createSession();
-    std::vector<SessionRecord> listSessions();
+    std::vector<SessionInfo> listSessions(int limit = 20);
+    std::vector<SessionInfo> listSessionDetails(int limit = 20);
+    std::string getMostRecentSessionId();
     bool loadSession(const std::string& sessionId);
 
     void addMessage(const Message& msg, const std::string& sessionId, int tokenCount = 0);

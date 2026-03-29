@@ -120,6 +120,50 @@ std::vector<SessionRecord> Database::listSessions() {
     return sessions;
 }
 
+std::vector<SessionInfo> Database::listSessionDetails(int limit) {
+    std::vector<SessionInfo> sessions;
+    std::string sql =
+        "SELECT s.session_id, s.created_at, COUNT(m.id) as msg_count, "
+        "(SELECT SUBSTR(content, 1, 80) FROM messages WHERE session_id = s.session_id ORDER BY rowid DESC LIMIT 1) as last_msg "
+        "FROM sessions s LEFT JOIN messages m ON s.session_id = m.session_id "
+        "GROUP BY s.session_id ORDER BY COALESCE(MAX(m.timestamp), s.created_at) DESC, s.rowid DESC";
+    if (limit > 0) {
+        sql += " LIMIT " + std::to_string(limit);
+    }
+    sql += ";";
+
+    sqlite3_stmt* stmt;
+    if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) return sessions;
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        SessionInfo info;
+        info.session_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        info.created_at = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+        info.message_count = sqlite3_column_int(stmt, 2);
+        const char* lastMsg = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
+        info.last_message_preview = lastMsg ? lastMsg : "";
+        sessions.push_back(info);
+    }
+    sqlite3_finalize(stmt);
+    return sessions;
+}
+
+std::string Database::getMostRecentSessionId() {
+    const char* sql =
+        "SELECT session_id FROM sessions ORDER BY rowid DESC LIMIT 1;";
+
+    sqlite3_stmt* stmt;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return "";
+
+    std::string result;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        const char* id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        result = id ? id : "";
+    }
+    sqlite3_finalize(stmt);
+    return result;
+}
+
 bool Database::sessionExists(const std::string& sessionId) {
     const char* sql = "SELECT COUNT(*) FROM sessions WHERE session_id = ?;";
     sqlite3_stmt* stmt;

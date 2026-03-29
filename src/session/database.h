@@ -12,6 +12,13 @@ struct SessionRecord {
     std::string summary; // First 80 chars of last message
 };
 
+struct SessionInfo {
+    std::string session_id;
+    std::string created_at;
+    int message_count = 0;
+    std::string last_message_preview;  // max 80 chars
+};
+
 struct MessageRecord {
     std::string id;
     std::string session_id;
@@ -37,6 +44,8 @@ public:
     // Session operations
     std::string createSession();
     std::vector<SessionRecord> listSessions();
+    std::vector<SessionInfo> listSessionDetails(int limit = 20);
+    std::string getMostRecentSessionId();
     bool sessionExists(const std::string& sessionId);
 
     // Message operations

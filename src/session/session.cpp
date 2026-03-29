@@ -15,8 +15,16 @@ std::string SessionManager::createSession() {
     return currentSessionId_;
 }
 
-std::vector<SessionRecord> SessionManager::listSessions() {
-    return db_.listSessions();
+std::vector<SessionInfo> SessionManager::listSessions(int limit) {
+    return db_.listSessionDetails(limit);
+}
+
+std::vector<SessionInfo> SessionManager::listSessionDetails(int limit) {
+    return db_.listSessionDetails(limit);
+}
+
+std::string SessionManager::getMostRecentSessionId() {
+    return db_.getMostRecentSessionId();
 }
 
 bool SessionManager::loadSession(const std::string& sessionId) {

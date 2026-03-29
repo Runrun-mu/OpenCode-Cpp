@@ -29,6 +29,7 @@ private:
     void setupTools();
     void handleInput(const std::string& input);
     bool handleSlashCommand(const std::string& input, std::mutex& chatMutex);
+    void loadSessionToChat();
     double calculateCost() const;
 
     Config& config_;
@@ -49,6 +50,8 @@ private:
     std::vector<SlashCommand> slashCommands_ = {
         {"/compact", "Compact conversation history"},
         {"/status", "Show session status"},
+        {"/sessions", "List all sessions"},
+        {"/resume", "Resume a previous session"},
         {"/skill", "Manage skills"},
         {"/clear", "Clear chat display"},
         {"/help", "Show available commands"},

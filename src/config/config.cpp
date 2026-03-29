@@ -139,6 +139,12 @@ Config Config::fromArgs(int argc, char* argv[]) {
             cfg.session_id = argv[++i];
         } else if (arg == "--auth" && i + 1 < argc) {
             cfg.auth_mode = argv[++i];
+        } else if (arg == "--resume") {
+            cfg.resume = true;
+            // Check if next argument is a session ID (not another flag)
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                cfg.resume_session_id = argv[++i];
+            }
         }
     }
 
@@ -157,6 +163,7 @@ Config Config::fromArgs(int argc, char* argv[]) {
                   << "  --model <model>       Specify LLM model (e.g. claude-sonnet-4-20250514, gpt-4o)\n"
                   << "  --provider <provider> Specify provider (anthropic, openai)\n"
                   << "  --session <id>        Resume a previous session by ID\n"
+                  << "  --resume [id]         Resume last session, or specific session by ID\n"
                   << "  --version, -v         Show version number\n"
                   << "  --help, -h            Show this help message\n\n"
                   << "Environment variables:\n"

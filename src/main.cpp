@@ -10,6 +10,22 @@ int main(int argc, char* argv[]) {
     // Initialize database (ensure tables are created)
     opencodecpp::Database db;
     db.open(opencodecpp::Config::dbFilePath());
+
+    // AC-9: Resolve --resume flag to session_id
+    if (config.resume) {
+        if (!config.resume_session_id.empty()) {
+            config.session_id = config.resume_session_id;
+        } else {
+            // --resume without arg: resolve to most recent session
+            std::string recentId = db.getMostRecentSessionId();
+            if (!recentId.empty()) {
+                config.session_id = recentId;
+            } else {
+                std::cerr << "No previous sessions found to resume.\n";
+            }
+        }
+    }
+
     db.close();
 
     // AC-8: Check API key availability

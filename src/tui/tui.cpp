@@ -36,6 +36,9 @@ TUI::TUI(Config& config) : config_(config) {
         if (!session_.loadSession(config_.session_id)) {
             // Session not found, create new one
             session_.createSession();
+        } else {
+            // Session loaded successfully, populate chat display
+            loadSessionToChat();
         }
     } else {
         session_.createSession();
@@ -143,6 +146,29 @@ void TUI::setupTools() {
     agentLoop_->registerTool(subagentTool);
     // After registering all tools, set available tools on subagent
     subagentTool->setAvailableTools(agentLoop_->getTools());
+}
+
+void TUI::loadSessionToChat() {
+    auto history = session_.getHistory();
+    for (const auto& msg : history) {
+        if (msg.role == "user" || msg.role == "assistant") {
+            ChatMessage chatMsg;
+            chatMsg.role = msg.role;
+            // Extract text content from JSON
+            if (msg.content.is_string()) {
+                chatMsg.content = msg.content.get<std::string>();
+            } else if (msg.content.is_array()) {
+                // Concatenate text parts
+                for (const auto& part : msg.content) {
+                    if (part.contains("text")) chatMsg.content += part["text"].get<std::string>();
+                }
+            }
+            chatMessages_.push_back(chatMsg);
+            // Accumulate token counts
+            totalInputTokens_ += msg.input_tokens;
+            totalOutputTokens_ += msg.output_tokens;
+        }
+    }
 }
 
 double TUI::calculateCost() const {
@@ -278,6 +304,106 @@ bool TUI::handleSlashCommand(const std::string& input, std::mutex& chatMutex) {
         startMsg.content = "Executing plan...";
         chatMessages_.push_back(startMsg);
         return true; // Will be handled asynchronously
+    }
+
+    // Handle /sessions command (AC-14)
+    if (input.substr(0, 9) == "/sessions") {
+        auto sessions = session_.listSessions(20);
+        ChatMessage sysMsg;
+        sysMsg.role = "tool";
+        sysMsg.toolName = "sessions";
+        sysMsg.toolStatus = "done";
+
+        if (sessions.empty()) {
+            sysMsg.content = "No sessions found.";
+        } else {
+            std::string content = "Sessions:\n";
+            int idx = 1;
+            for (auto& s : sessions) {
+                std::string truncId = s.session_id.substr(0, std::min((size_t)8, s.session_id.size()));
+                std::string preview = s.last_message_preview;
+                if (preview.size() > 80) preview = preview.substr(0, 80);
+                content += "  [" + std::to_string(idx) + "] " + truncId
+                    + "  " + s.created_at
+                    + "  (" + std::to_string(s.message_count) + " msgs)";
+                if (!preview.empty()) {
+                    content += "  Last: " + preview;
+                }
+                content += "\n";
+                idx++;
+            }
+            content += "\nUse /resume <session-id> to switch";
+            sysMsg.content = content;
+        }
+        chatMessages_.push_back(sysMsg);
+        return true;
+    }
+
+    // Handle /resume command (AC-15, AC-16)
+    if (input.substr(0, 7) == "/resume") {
+        std::string arg = input.size() > 8 ? input.substr(8) : "";
+        // Trim
+        size_t argStart = arg.find_first_not_of(" \t");
+        if (argStart != std::string::npos) arg = arg.substr(argStart);
+        else arg.clear();
+
+        // AC-15: /resume without arg shows session list (same as /sessions)
+        if (arg.empty()) {
+            auto sessions = session_.listSessions(20);
+            ChatMessage sysMsg;
+            sysMsg.role = "tool";
+            sysMsg.toolName = "resume";
+            sysMsg.toolStatus = "done";
+
+            if (sessions.empty()) {
+                sysMsg.content = "No sessions found.";
+            } else {
+                std::string content = "Sessions:\n";
+                int idx = 1;
+                for (auto& s : sessions) {
+                    std::string truncId = s.session_id.substr(0, std::min((size_t)8, s.session_id.size()));
+                    std::string preview = s.last_message_preview;
+                    if (preview.size() > 80) preview = preview.substr(0, 80);
+                    content += "  [" + std::to_string(idx) + "] " + truncId
+                        + "  " + s.created_at
+                        + "  (" + std::to_string(s.message_count) + " msgs)";
+                    if (!preview.empty()) {
+                        content += "  Last: " + preview;
+                    }
+                    content += "\n";
+                    idx++;
+                }
+                content += "\nUse /resume <session-id> to switch";
+                sysMsg.content = content;
+            }
+            chatMessages_.push_back(sysMsg);
+            return true;
+        }
+
+        // AC-16: /resume <session-id> loads the specified session
+        if (session_.loadSession(arg)) {
+            chatMessages_.clear();
+            // Reset token counts before restoring
+            totalInputTokens_ = 0;
+            totalOutputTokens_ = 0;
+            loadSessionToChat();
+
+            int msgCount = session_.messageCount();
+            ChatMessage sysMsg;
+            sysMsg.role = "tool";
+            sysMsg.toolName = "resume";
+            sysMsg.toolStatus = "done";
+            sysMsg.content = "Resumed session " + arg + " (" + std::to_string(msgCount) + " messages loaded)";
+            chatMessages_.push_back(sysMsg);
+        } else {
+            ChatMessage sysMsg;
+            sysMsg.role = "tool";
+            sysMsg.toolName = "resume";
+            sysMsg.toolStatus = "done";
+            sysMsg.content = "Error: Session not found: " + arg;
+            chatMessages_.push_back(sysMsg);
+        }
+        return true;
     }
 
     // Handle /skill command

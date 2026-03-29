@@ -17,6 +17,8 @@ struct Config {
     std::string custom_instructions;
     std::string session_id;
     std::string auth_mode; // AC-20: "codex" for ChatGPT login auth
+    bool resume = false;
+    std::string resume_session_id;
 
     // CLI overrides
     std::string cli_model;
