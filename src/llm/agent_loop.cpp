@@ -271,6 +271,28 @@ CompactResult AgentLoop::compact(const std::string& systemPrompt) {
         if (i == 0) splitIndex = 0;
     }
 
+    // Fix split boundary: ensure recentMessages doesn't start with orphan "tool" messages
+    // (tool messages must follow an assistant message with tool_calls)
+    while (splitIndex < static_cast<int>(nonSystemMessages.size()) &&
+           nonSystemMessages[splitIndex].role == "tool") {
+        // Pull this tool msg (and its preceding assistant) into older
+        splitIndex++;
+        if (!recentMessages.empty() && recentMessages.front().role == "tool") {
+            recentMessages.erase(recentMessages.begin());
+        }
+    }
+    // Also ensure we don't split in the middle of an assistant+tool sequence
+    // If splitIndex-1 is an assistant with tool_calls, pull it and all following tools into recent
+    if (splitIndex > 0 && splitIndex < static_cast<int>(nonSystemMessages.size())) {
+        auto& prev = nonSystemMessages[splitIndex - 1];
+        if (prev.role == "assistant" && !prev.tool_calls.is_null() && !prev.tool_calls.empty()) {
+            // The assistant's tool results are in recentMessages but the assistant is in older
+            // Move the assistant into recent
+            splitIndex--;
+            recentMessages.insert(recentMessages.begin(), nonSystemMessages[splitIndex]);
+        }
+    }
+
     // Older messages are everything before the split
     for (int i = 0; i < splitIndex; i++) {
         olderMessages.push_back(nonSystemMessages[i]);
@@ -341,9 +363,37 @@ CompactResult AgentLoop::compact(const std::string& systemPrompt) {
     // Add summary message
     newHistory.push_back(summaryMsg);
 
-    // Add recent messages
-    for (auto& msg : recentMessages) {
-        newHistory.push_back(msg);
+    // Add recent messages (intact, but skip orphan tool messages)
+    // An orphan tool msg is one where the preceding msg is not assistant with tool_calls
+    for (size_t i = 0; i < recentMessages.size(); i++) {
+        if (recentMessages[i].role == "tool") {
+            // Check if preceded by assistant with tool_calls
+            bool hasParent = false;
+            if (i > 0 && recentMessages[i-1].role == "assistant" &&
+                !recentMessages[i-1].tool_calls.is_null() && !recentMessages[i-1].tool_calls.empty()) {
+                hasParent = true;
+            }
+            // Also check in newHistory (summary msg is user role, won't match)
+            if (!hasParent && !newHistory.empty()) {
+                auto& last = newHistory.back();
+                if (last.role == "assistant" && !last.tool_calls.is_null() && !last.tool_calls.empty()) {
+                    hasParent = true;
+                }
+            }
+            if (!hasParent) {
+                // Convert orphan tool msg to user msg to preserve info
+                Message converted;
+                converted.role = "user";
+                if (recentMessages[i].content.is_string()) {
+                    converted.content = "[Previous tool result]: " + recentMessages[i].content.get<std::string>();
+                } else {
+                    converted.content = "[Previous tool result]: " + recentMessages[i].content.dump();
+                }
+                newHistory.push_back(converted);
+                continue;
+            }
+        }
+        newHistory.push_back(recentMessages[i]);
     }
 
     // Replace session history
