@@ -641,11 +641,12 @@ void TUI::run() {
                     steerMsg.role = "user";
                     steerMsg.content = "[Steer] " + steerText;
                     chatMessages_.push_back(steerMsg);
-
-                    // AC-12: Queue steer for injection into agent loop
-                    agentLoop_->addSteer(steerText);
                     scrollToBottom.store(true);
                 }
+
+                // AC-12: Queue steer for injection into agent loop
+                // Called OUTSIDE chatMutex to avoid lock contention (AC-2, AC-4)
+                agentLoop_->addSteer(steerText);
                 return true;
             }
 

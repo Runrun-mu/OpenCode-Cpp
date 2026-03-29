@@ -117,6 +117,39 @@ LLMResponse AgentLoop::run(
         session_.addMessage(assistantMsg, session_.currentSessionId(), resp.output_tokens);
         messages.push_back(assistantMsg);
 
+        // Post-stream steer drain: check if steers arrived during streaming
+        bool hasPendingSteers = false;
+        {
+            std::lock_guard<std::mutex> lock(steerMutex_);
+            while (!steerQueue_.empty()) {
+                std::string steerText = steerQueue_.front();
+                steerQueue_.pop();
+
+                // Insert synthetic assistant acknowledgment if last message is user
+                // to maintain valid role alternation (AC-5)
+                if (!messages.empty() && messages.back().role == "user") {
+                    Message syntheticAssistant;
+                    syntheticAssistant.role = "assistant";
+                    syntheticAssistant.content = "[Acknowledged]";
+                    session_.addMessage(syntheticAssistant, session_.currentSessionId());
+                    messages.push_back(syntheticAssistant);
+                }
+
+                Message steerMsg;
+                steerMsg.role = "user";
+                steerMsg.content = "[Steer] " + steerText;
+                session_.addMessage(steerMsg, session_.currentSessionId());
+                messages.push_back(steerMsg);
+                hasPendingSteers = true;
+            }
+        }
+
+        // If steers arrived during streaming, continue the loop for another LLM round
+        if (hasPendingSteers) {
+            finalResponse = resp;
+            continue;
+        }
+
         // Check stop condition
         if (resp.tool_calls.empty()) {
             // No tool calls - we're done

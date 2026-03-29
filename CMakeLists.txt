@@ -181,3 +181,7 @@ add_test(NAME test_codex_responses_api COMMAND test_codex_responses_api)
 add_executable(test_session_resume tests/test_session_resume.cpp)
 target_link_libraries(test_session_resume PRIVATE opencodecpp_lib)
 add_test(NAME test_session_resume COMMAND test_session_resume)
+
+add_executable(test_steer_fix tests/test_steer_fix.cpp)
+target_link_libraries(test_steer_fix PRIVATE opencodecpp_lib)
+add_test(NAME test_steer_fix COMMAND test_steer_fix)
